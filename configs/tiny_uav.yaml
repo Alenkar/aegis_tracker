@@ -1,0 +1,123 @@
+profile: tiny_uav
+template_size: 128
+search_size: 256
+patch_size: 16
+local_feature_stride: 4
+local_feature_dim: 128
+embed_dim: 192
+depth: 8
+num_heads: 6
+base_search_factor: 18.0
+adaptive_search_min_factor: 2.5
+adaptive_search_scale_ref: 32.0
+min_crop_side: 144
+max_crop_side: 768
+topk_tracking: 5
+topk_uncertain: 8
+topk_lost: 12
+center_nms_radius_px: 10.0
+center_nms_max_keep_tracking: 5
+center_nms_max_keep_lost: 8
+tracking_candidate_score_response_weight: 0.65
+tracking_candidate_score_motion_weight: 0.35
+stable_size_lr_tiny: 0.03
+
+train:
+  data: ""
+  out: runs/train
+  epochs: 50
+  batch: 8
+  lr: 0.0001
+  pairs_per_epoch: 20000
+  max_gap: 20
+  num_workers: 4
+  dataloader_timeout: 60
+  ckpt: ""
+
+tensorboard:
+  enabled: true
+  log_dir: ""
+
+validation:
+  enabled: true
+  data: ""
+  every: 1
+  max_sequences: 5
+  max_frames_per_sequence: 100
+
+clearml:
+  enabled: false
+  project_name: AegisTrack
+  task_name: train
+  queue_name: default
+  remote: false
+  dataset_id: ""
+
+datasets:
+  root: /home/neuro/dataset/UAV-TRACKING
+  sources:
+    anti_uav_rgbt:
+      enabled: true
+      path: Anti-UAV-RGBT
+      modalities: [infrared, visible]
+    anti_uav410:
+      enabled: true
+      path: Anti-UAV410
+      modalities: []
+    cst_anti_uav:
+      enabled: true
+      path: CST-AntiUAV
+      modalities: []
+    anti_uav_4th:
+      enabled: true
+      path: The_4th_Anti-UAV_Dataset_Test
+      modalities: []
+
+# Proven fast center-size baseline. No Mini-TP-MoE, no stacked heavy blocks.
+center_sigma_min: 1.5
+corr_response_weight: 0.45
+train_search_jitter: 0.30
+train_motion_jitter: 0.10
+train_scale_jitter: 0.25
+
+# Single-path runtime.
+default_runtime_mode: uetrack_like
+egomotion_enabled: false
+dynamic_template_enabled: false
+recovery_in_tracking: false
+use_target_instance_selector: false
+use_learned_runtime_heads: false
+decision_loss_weight: 0.0
+ranker_loss_weight: 0.0
+presence_loss_weight: 0.0
+update_recovery_loss_weight: 0.0
+
+# Runtime trust / recovery.
+uetrack_trust_thr: 0.45
+uetrack_lost_frames: 2
+uetrack_recover_frames: 2
+crop_lost_gain: 2.2
+uetrack_max_tracking_jump_factor: 4.0
+uetrack_max_tracking_jump_min_px: 48.0
+
+# BBox prediction: center-size head. Keep predicted size active.
+size_pred_blend_tiny: 0.75
+size_pred_blend_generic: 0.85
+bbox_decode_center_window: 3
+bbox_decode_size_window: 3
+bbox_target_expand_px: 1.0
+bbox_target_expand_ratio: 0.08
+
+# Explicitly disabled heavy experiment that slowed inference and hurt AUC.
+interaction_blocks: 0
+enable_mini_tp_moe: false
+train_absent_prob: 0.0
+present_loss_weight: 0.0
+distill_response_weight: 0.0
+distill_bbox_weight: 0.0
+
+# After sanity check, increase inside this same block:
+# train.pairs_per_epoch: 60000
+# train.max_gap: 60
+# validation.max_sequences: null
+# validation.max_frames_per_sequence: null
