@@ -1,0 +1,113 @@
+from __future__ import annotations
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Dict, List, Optional, Tuple
+import torch
+
+BBox = Tuple[float, float, float, float]
+
+
+class TrackState(str, Enum):
+    TRACKING = "TRACKING"
+    UNCERTAIN = "UNCERTAIN"
+    VERIFYING = "VERIFYING"
+    LOST = "LOST"
+    REACQUIRED = "REACQUIRED"
+
+
+class CandidateSource(str, Enum):
+    LOCAL = "local"
+    TOPK = "topk"
+    CLAMP = "clamp"
+    SHIFT = "shift"
+    ENLARGED = "enlarged"
+    MOTION = "motion"
+    LOG_DOG = "log_dog"
+    TILE = "tile"
+    DETECTOR = "detector"
+
+
+class CandidateLife(str, Enum):
+    PROPOSED = "proposed"
+    QUARANTINED = "quarantined"
+    CONFIRMED = "confirmed"
+    REJECTED = "rejected"
+
+
+class Decision(str, Enum):
+    ACCEPT_RAW = "ACCEPT_RAW"
+    ACCEPT_CENTER_CLAMP_SIZE = "ACCEPT_CENTER_CLAMP_SIZE"
+    HOLD_LAST_GOOD = "HOLD_LAST_GOOD"
+    ROLLBACK = "ROLLBACK"
+    VERIFY_MORE = "VERIFY_MORE"
+    LOST = "LOST"
+    REINIT_QUARANTINED = "REINIT_QUARANTINED"
+
+
+@dataclass
+class Candidate:
+    bbox: BBox
+    source: CandidateSource
+    local_score: float = 0.0
+    objectness: float = 0.0
+    quality: float = 0.0
+    center_score: float = 0.0
+    size_score: float = 0.0
+    identity_score: float = 0.0
+    negative_score: float = 0.0
+    distractor_score: float = 0.0
+    motion_score: float = 0.0
+    presence_score: float = 0.0
+    recovery_score: float = 0.0
+    update_score: float = 0.0
+    uncertainty: float = 1.0
+    final_score: float = 0.0
+    visual_emb: Optional[torch.Tensor] = None
+    scalar_features: Optional[torch.Tensor] = None
+    lifecycle: CandidateLife = CandidateLife.PROPOSED
+    reason: List[str] = field(default_factory=list)
+
+    @property
+    def center(self):
+        x, y, w, h = self.bbox
+        return x + w / 2.0, y + h / 2.0
+
+    @property
+    def size(self):
+        return self.bbox[2], self.bbox[3]
+
+    @property
+    def area(self):
+        return max(0.0, self.bbox[2]) * max(0.0, self.bbox[3])
+
+
+@dataclass
+class LocalOutput:
+    best_bbox: BBox
+    center_map: torch.Tensor
+    objectness_map: torch.Tensor
+    quality_map: torch.Tensor
+    size_map: torch.Tensor
+    feature_map: torch.Tensor
+    response_map: torch.Tensor
+    topk_candidates: List[Candidate]
+    target_token: torch.Tensor
+    raw_score: float
+    windowed_score: float
+    center_good: bool
+    size_bad: bool
+    crop_meta: Dict[str, float]
+
+
+@dataclass
+class TrackOutput:
+    target_bbox: BBox
+    state: TrackState
+    decision: Decision
+    confidence: float
+    scores: Dict[str, float]
+    quality: Dict[str, float]
+    memory_update: bool
+    candidates: List[Candidate]
+    reason: List[str]
+    fps: float
