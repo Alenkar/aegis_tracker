@@ -63,14 +63,14 @@ def main():
     ap.add_argument('--headless', action='store_true')
     ap.add_argument('--log-every', type=int, default=1)
     ap.add_argument('--warmup-frames', type=int, default=10)
+    ap.add_argument('--max-frames', type=int, default=0, help='Stop after this many tracked frames; 0 means run to end of video.')
+    ap.add_argument('--stop-on-lost', action='store_true', help='Stop after the first LOST tracker state.')
     ap.add_argument('--csv-log', default='')
     ap.add_argument('--delete-score-thr', type=float, default=0.5,
                     help='Terminate current track completely when confidence is below this threshold. After deletion, tracking stops until manual reinit with R.')
     args = ap.parse_args()
 
     cfg = load_aegis_config(args.config, device=args.device)
-    cfg.egomotion_enabled = False
-    cfg.use_learned_runtime_heads = False
     tracker = AegisTrackOne(cfg).to(args.device)
     tracker.load(args.ckpt, strict=False)
 
@@ -91,7 +91,7 @@ def main():
     csv_f = open(args.csv_log, 'w', newline='', encoding='utf-8') if args.csv_log else None
     csv_writer = None
     if csv_f is not None:
-        fields = ['frame','state','decision','bbox_x','bbox_y','bbox_w','bbox_h','confidence','match_score','second_score','peak_margin','peak_ratio','psr','bbox_size_source','pred_w','pred_h','stable_w','stable_h','size_blend','bbox_decode_center_window','bbox_decode_size_window','bad_count','good_count','anchor_source','motion_ok','jump_px','max_jump_px','selection_score','raw_topk_count','nms_topk_count','track_deleted','tracking_active','time_ms','fps']
+        fields = ['frame','state','decision','bbox_x','bbox_y','bbox_w','bbox_h','confidence','active_score','tracking_score','recovery_score','response_shape_score','motion_score','identity_score','size_prior_score','objectness_quality_score','recovery_verifier_ok','recovery_shape_ok','recovery_identity_ok','recovery_size_ok','objectness','quality','match_score','second_score','peak_margin','peak_ratio','psr','bbox_size_source','pred_w','pred_h','stable_w','stable_h','size_blend','bbox_decode_center_window','bbox_decode_size_window','bad_count','good_count','anchor_source','motion_ok','jump_px','max_jump_px','selection_score','raw_topk_count','nms_topk_count','track_deleted','tracking_active','time_ms','fps']
         csv_writer = csv.DictWriter(csv_f, fieldnames=fields)
         csv_writer.writeheader()
 
@@ -105,6 +105,8 @@ def main():
     tracking_active = True
     ok, frame = cap.read()
     while ok:
+        if args.max_frames and frame_idx > args.max_frames:
+            break
         if not tracking_active:
             vis = draw_output(frame, None, f'TRACK DELETED - press R to reinit', None)
             if wr is not None:
@@ -141,7 +143,12 @@ def main():
         if args.log_every and frame_idx % args.log_every == 0:
             print(
                 f"frame={frame_idx} state={out.state.value} decision={out.decision.value} "
-                f"deleted={int(track_deleted)} active={int(tracking_active)} conf={out.confidence:.3f} match={scores.get('match_score',0):.3f} "
+                f"deleted={int(track_deleted)} active={int(tracking_active)} conf={out.confidence:.3f} "
+                f"trk={scores.get('tracking_score',0):.3f} rec={scores.get('recovery_score',0):.3f} "
+                f"shape={scores.get('response_shape_score',0):.3f} mot={scores.get('motion_score',0):.3f} "
+                f"id={scores.get('identity_score',0):.3f} sizep={scores.get('size_prior_score',0):.3f} oq={scores.get('objectness_quality_score',0):.3f} "
+                f"ver={scores.get('recovery_verifier_ok',0):.0f}/{scores.get('recovery_shape_ok',0):.0f}{scores.get('recovery_identity_ok',0):.0f}{scores.get('recovery_size_ok',0):.0f} "
+                f"match={scores.get('match_score',0):.3f} "
                 f"psr={scores.get('psr',0):.2f} margin={scores.get('peak_margin',0):.3f} "
                 f"bbox={fmt_bbox(bbox)} pred=({scores.get('pred_w',0):.1f},{scores.get('pred_h',0):.1f}) "
                 f"stable=({scores.get('stable_w',0):.1f},{scores.get('stable_h',0):.1f}) "
@@ -158,6 +165,20 @@ def main():
                 'decision': out.decision.value,
                 'bbox_x': bbox[0], 'bbox_y': bbox[1], 'bbox_w': bbox[2], 'bbox_h': bbox[3],
                 'confidence': out.confidence,
+                'active_score': scores.get('active_score', out.confidence),
+                'tracking_score': scores.get('tracking_score', 0.0),
+                'recovery_score': scores.get('recovery_score', 0.0),
+                'response_shape_score': scores.get('response_shape_score', 0.0),
+                'motion_score': scores.get('motion_score', 0.0),
+                'identity_score': scores.get('identity_score', 0.0),
+                'size_prior_score': scores.get('size_prior_score', 0.0),
+                'objectness_quality_score': scores.get('objectness_quality_score', 0.0),
+                'recovery_verifier_ok': scores.get('recovery_verifier_ok', 0.0),
+                'recovery_shape_ok': scores.get('recovery_shape_ok', 0.0),
+                'recovery_identity_ok': scores.get('recovery_identity_ok', 0.0),
+                'recovery_size_ok': scores.get('recovery_size_ok', 0.0),
+                'objectness': scores.get('objectness', 0.0),
+                'quality': scores.get('quality', 0.0),
                 'match_score': scores.get('match_score', 0.0),
                 'second_score': scores.get('second_score', 0.0),
                 'peak_margin': scores.get('peak_margin', 0.0),
@@ -181,6 +202,16 @@ def main():
                 'tracking_active': int(tracking_active),
                 'time_ms': time_ms, 'fps': inst_fps,
             })
+        if args.stop_on_lost and out.state.value == 'LOST':
+            print(
+                f"first_lost frame={frame_idx} bbox={fmt_bbox(bbox)} conf={out.confidence:.3f} "
+                f"trk={scores.get('tracking_score',0):.3f} rec={scores.get('recovery_score',0):.3f} "
+                f"shape={scores.get('response_shape_score',0):.3f} mot={scores.get('motion_score',0):.3f} "
+                f"id={scores.get('identity_score',0):.3f} sizep={scores.get('size_prior_score',0):.3f} oq={scores.get('objectness_quality_score',0):.3f} "
+                f"ver={scores.get('recovery_verifier_ok',0):.0f}/{scores.get('recovery_shape_ok',0):.0f}{scores.get('recovery_identity_ok',0):.0f}{scores.get('recovery_size_ok',0):.0f}",
+                flush=True,
+            )
+            break
         vis_text = f"{out.state.value} {out.confidence:.2f} {scores.get('bbox_size_source','')}"
         if track_deleted:
             vis_text = f"DELETED score<{args.delete_score_thr:.2f} {out.confidence:.2f}"

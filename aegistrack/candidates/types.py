@@ -9,37 +9,17 @@ BBox = Tuple[float, float, float, float]
 
 class TrackState(str, Enum):
     TRACKING = "TRACKING"
-    UNCERTAIN = "UNCERTAIN"
-    VERIFYING = "VERIFYING"
     LOST = "LOST"
-    REACQUIRED = "REACQUIRED"
 
 
 class CandidateSource(str, Enum):
     LOCAL = "local"
     TOPK = "topk"
-    CLAMP = "clamp"
-    SHIFT = "shift"
-    ENLARGED = "enlarged"
-    MOTION = "motion"
-    LOG_DOG = "log_dog"
-    TILE = "tile"
-    DETECTOR = "detector"
-
-
-class CandidateLife(str, Enum):
-    PROPOSED = "proposed"
-    QUARANTINED = "quarantined"
-    CONFIRMED = "confirmed"
-    REJECTED = "rejected"
 
 
 class Decision(str, Enum):
     ACCEPT_RAW = "ACCEPT_RAW"
-    ACCEPT_CENTER_CLAMP_SIZE = "ACCEPT_CENTER_CLAMP_SIZE"
     HOLD_LAST_GOOD = "HOLD_LAST_GOOD"
-    ROLLBACK = "ROLLBACK"
-    VERIFY_MORE = "VERIFY_MORE"
     LOST = "LOST"
     REINIT_QUARANTINED = "REINIT_QUARANTINED"
 
@@ -54,17 +34,10 @@ class Candidate:
     center_score: float = 0.0
     size_score: float = 0.0
     identity_score: float = 0.0
-    negative_score: float = 0.0
-    distractor_score: float = 0.0
     motion_score: float = 0.0
-    presence_score: float = 0.0
-    recovery_score: float = 0.0
-    update_score: float = 0.0
-    uncertainty: float = 1.0
     final_score: float = 0.0
     visual_emb: Optional[torch.Tensor] = None
     scalar_features: Optional[torch.Tensor] = None
-    lifecycle: CandidateLife = CandidateLife.PROPOSED
     reason: List[str] = field(default_factory=list)
 
     @property
@@ -107,7 +80,6 @@ class TrackOutput:
     confidence: float
     scores: Dict[str, float]
     quality: Dict[str, float]
-    memory_update: bool
     candidates: List[Candidate]
     reason: List[str]
     fps: float

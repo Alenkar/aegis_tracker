@@ -13,13 +13,19 @@ adaptive_search_scale_ref: 32.0
 min_crop_side: 144
 max_crop_side: 768
 topk_tracking: 5
-topk_uncertain: 8
 topk_lost: 12
 center_nms_radius_px: 10.0
 center_nms_max_keep_tracking: 5
 center_nms_max_keep_lost: 8
-tracking_candidate_score_response_weight: 0.65
-tracking_candidate_score_motion_weight: 0.35
+tracking_score_shape_weight: 0.70
+tracking_score_motion_weight: 0.30
+recovery_score_shape_weight: 0.35
+recovery_score_identity_weight: 0.35
+recovery_score_size_weight: 0.15
+recovery_score_objectness_quality_weight: 0.15
+recovery_min_shape_score: 0.45
+recovery_min_identity_score: 0.10
+recovery_min_size_prior_score: 0.35
 stable_size_lr_tiny: 0.03
 
 train:
@@ -80,20 +86,10 @@ train_search_jitter: 0.30
 train_motion_jitter: 0.10
 train_scale_jitter: 0.25
 
-# Single-path runtime.
-default_runtime_mode: uetrack_like
-egomotion_enabled: false
-dynamic_template_enabled: false
-recovery_in_tracking: false
-use_target_instance_selector: false
-use_learned_runtime_heads: false
-decision_loss_weight: 0.0
-ranker_loss_weight: 0.0
-presence_loss_weight: 0.0
-update_recovery_loss_weight: 0.0
-
-# Runtime trust / recovery.
+# Runtime trust / reinit quarantine.
 uetrack_trust_thr: 0.45
+tracking_score_thr: 0.45
+recovery_score_thr: 0.45
 uetrack_lost_frames: 2
 uetrack_recover_frames: 2
 crop_lost_gain: 2.2

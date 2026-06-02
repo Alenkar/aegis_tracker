@@ -6,12 +6,10 @@ import torch
 
 from .config import AegisConfig, config_to_dict
 from .core.local_core import LocalCore
-from .core.egomotion import EgoMotionLite
 from .utils.crop_policy import adaptive_search_crop_policy
 from .utils.image import crop_with_context
 from .utils.box_ops import BBox, clamp_bbox, bbox_center, make_bbox_from_center
 from .candidates.types import Candidate, Decision, TrackOutput, TrackState
-from .decision.gates import StableBoxHead
 
 
 def _candidate_metric(c: Candidate, name: str, default: float = 0.0) -> float:
@@ -52,19 +50,34 @@ def _candidate_center_nms(
     return kept
 
 
+class StableSizeFallback:
+    """Stable object size reference used only to damp noisy bbox size predictions."""
+
+    def __init__(self, cfg: AegisConfig):
+        self.cfg = cfg
+        self.stable_size = (8.0, 8.0)
+
+    def reset(self, bbox: BBox):
+        self.stable_size = (max(1.0, float(bbox[2])), max(1.0, float(bbox[3])))
+
+    def update(self, bbox: BBox):
+        lr = self.cfg.stable_size_lr_tiny if self.cfg.profile == 'tiny_uav' else self.cfg.stable_size_lr_generic
+        sw, sh = self.stable_size
+        self.stable_size = ((1.0 - lr) * sw + lr * float(bbox[2]), (1.0 - lr) * sh + lr * float(bbox[3]))
+
+
 class AegisTrackOne:
     """Single-path UETrack-like tracker.
 
-    Legacy Aegis decision/presence/memory/gates are deliberately removed from the
-    active path. Normal tracking uses the prediction head bbox directly. Stable
-    size is only a fallback/reference, never the main bbox source.
+    Active runtime is LocalCore top-K, center-distance NMS, motion-aware
+    selection, TRACKING/LOST state transitions, reinit quarantine, stable size
+    fallback, adaptive crop, and debug scores.
     """
 
     def __init__(self, cfg: Optional[AegisConfig] = None, detector_fn=None):
         self.cfg = cfg or AegisConfig()
         self.local_core = LocalCore(self.cfg)
-        self.stable_box = StableBoxHead(self.cfg)
-        self.egomotion = EgoMotionLite(False)
+        self.stable_box = StableSizeFallback(self.cfg)
         self.state = TrackState.LOST
         self.initialized = False
         self.prev_frame = None
@@ -76,6 +89,7 @@ class AegisTrackOne:
         self.velocity = np.zeros(2, dtype=np.float32)
         self.last_checkpoint_meta = {}
         self.pending_recovery_bbox: Optional[BBox] = None
+        self.initial_target_token: Optional[torch.Tensor] = None
 
     def to(self, device: str):
         self.cfg.device = device
@@ -101,6 +115,7 @@ class AegisTrackOne:
         init_bbox = clamp_bbox(init_bbox, W, H)
         self.local_core.eval()
         self.local_core.initialize(frame, init_bbox)
+        self.initial_target_token = self.local_core.encode_target(frame, init_bbox).detach()
         self.stable_box.reset(init_bbox)
         self.state = TrackState.TRACKING
         self.current_bbox = init_bbox
@@ -126,6 +141,7 @@ class AegisTrackOne:
         self.current_bbox = None
         self.last_good_bbox = None
         self.pending_recovery_bbox = None
+        self.initial_target_token = None
         self.bad_count = 0
         self.good_count = 0
         self.velocity[:] = 0.0
@@ -195,6 +211,70 @@ class AegisTrackOne:
         ratio_s = 1.0 / (1.0 + np.exp(-(ratio - 1.20) / 0.15))
         return float(np.clip(0.45 * psr_s + 0.35 * margin_s + 0.20 * ratio_s, 0.0, 1.0))
 
+    def _motion_consistency_score(self, jump_px: float, max_jump_px: float) -> float:
+        return float(np.exp(-((float(jump_px) / max(float(max_jump_px), 1e-6)) ** 2)))
+
+    def _size_prior_score(self, bbox: BBox) -> float:
+        sw, sh = self.stable_box.stable_size
+        w = max(float(bbox[2]), 1e-6)
+        h = max(float(bbox[3]), 1e-6)
+        log_w = np.log(w / max(float(sw), 1e-6))
+        log_h = np.log(h / max(float(sh), 1e-6))
+        return float(np.exp(-0.5 * (log_w * log_w + log_h * log_h)))
+
+    def _objectness_quality_score(self, cand: Candidate) -> float:
+        return float(np.clip(0.5 * float(cand.objectness) + 0.5 * float(cand.quality), 0.0, 1.0))
+
+    def _identity_score(self, cand: Candidate) -> float:
+        if self.initial_target_token is None or cand.visual_emb is None:
+            return 0.0
+        token = self.initial_target_token.to(cand.visual_emb.device)
+        return float(torch.dot(cand.visual_emb, token).clamp(-1.0, 1.0).item())
+
+    def _recovery_verifier_ok(self, cand: Candidate) -> bool:
+        shape_ok = float(getattr(cand, 'response_shape_score', 0.0)) >= float(getattr(self.cfg, 'recovery_min_shape_score', 0.45))
+        identity_ok = float(getattr(cand, 'identity_score', -1.0)) >= float(getattr(self.cfg, 'recovery_min_identity_score', 0.10))
+        size_ok = float(getattr(cand, 'size_prior_score', 0.0)) >= float(getattr(self.cfg, 'recovery_min_size_prior_score', 0.35))
+        cand.recovery_shape_ok = bool(shape_ok)
+        cand.recovery_identity_ok = bool(identity_ok)
+        cand.recovery_size_ok = bool(size_ok)
+        cand.recovery_verifier_ok = bool(shape_ok and identity_ok and size_ok)
+        return bool(cand.recovery_verifier_ok)
+
+    def _score_candidate(
+        self,
+        cand: Candidate,
+        *,
+        motion_ok: bool,
+        jump_px: float,
+        max_jump_px: float,
+    ) -> None:
+        response_shape = self._candidate_shape_score(cand)
+        motion = self._motion_consistency_score(jump_px, max_jump_px) if motion_ok else 0.0
+        size_prior = self._size_prior_score(cand.bbox)
+        obj_quality = self._objectness_quality_score(cand)
+        identity = self._identity_score(cand)
+
+        tracking_score = (
+            float(getattr(self.cfg, 'tracking_score_shape_weight', 0.70)) * response_shape
+            + float(getattr(self.cfg, 'tracking_score_motion_weight', 0.30)) * motion
+        )
+        recovery_score = (
+            float(getattr(self.cfg, 'recovery_score_shape_weight', 0.35)) * response_shape
+            + float(getattr(self.cfg, 'recovery_score_identity_weight', 0.35)) * max(identity, 0.0)
+            + float(getattr(self.cfg, 'recovery_score_size_weight', 0.15)) * size_prior
+            + float(getattr(self.cfg, 'recovery_score_objectness_quality_weight', 0.15)) * obj_quality
+        )
+
+        cand.response_shape_score = float(np.clip(response_shape, 0.0, 1.0))
+        cand.motion_score = float(np.clip(motion, 0.0, 1.0))
+        cand.size_prior_score = float(np.clip(size_prior, 0.0, 1.0))
+        cand.objectness_quality_score = float(obj_quality)
+        cand.identity_score = float(identity)
+        cand.tracking_score = float(np.clip(tracking_score, 0.0, 1.0))
+        cand.recovery_score = float(np.clip(recovery_score, 0.0, 1.0))
+        self._recovery_verifier_ok(cand)
+
     def _select_candidate_from_topk(
         self,
         candidates: list[Candidate],
@@ -222,20 +302,20 @@ class AegisTrackOne:
         if not nms_candidates:
             return None, 'nms_empty', 0.0, 0.0, 1.0, len(candidates), 0
 
-        # LOST: choose by response/shape. Large jumps are valid recovery hypotheses.
+        # LOST: choose by recovery score. Large jumps are valid recovery hypotheses.
         if self.state == TrackState.LOST:
+            for cand in nms_candidates:
+                cand.motion_ok = True
+                cand.jump_px = 0.0
+                cand.max_jump_px = 1.0
+                self._score_candidate(cand, motion_ok=True, jump_px=0.0, max_jump_px=1.0)
             best = max(
                 nms_candidates,
-                key=lambda c: 0.70 * float(c.local_score) + 0.30 * self._candidate_shape_score(c),
+                key=lambda c: float(getattr(c, 'recovery_score', 0.0)),
             )
-            best.selection_score = float(0.70 * best.local_score + 0.30 * self._candidate_shape_score(best))
-            best.motion_ok = True
-            best.jump_px = 0.0
-            best.max_jump_px = 1.0
-            return best, 'lost_best_after_nms', best.selection_score, 0.0, 1.0, len(candidates), len(nms_candidates)
+            best.selection_score = float(best.recovery_score)
+            return best, 'lost_recovery_score_after_nms', best.selection_score, 0.0, 1.0, len(candidates), len(nms_candidates)
 
-        response_w = float(getattr(self.cfg, 'tracking_candidate_score_response_weight', 0.65))
-        motion_w = float(getattr(self.cfg, 'tracking_candidate_score_motion_weight', 0.35))
         valid: list[Candidate] = []
 
         for cand in nms_candidates:
@@ -245,10 +325,11 @@ class AegisTrackOne:
             cand.max_jump_px = float(max_jump_px)
 
             if not motion_ok:
+                self._score_candidate(cand, motion_ok=False, jump_px=jump_px, max_jump_px=max_jump_px)
                 continue
 
-            motion_score = float(np.exp(-((jump_px / max(max_jump_px, 1e-6)) ** 2)))
-            cand.selection_score = float(response_w * cand.local_score + motion_w * motion_score)
+            self._score_candidate(cand, motion_ok=True, jump_px=jump_px, max_jump_px=max_jump_px)
+            cand.selection_score = float(cand.tracking_score)
             valid.append(cand)
 
         if valid:
@@ -274,25 +355,14 @@ class AegisTrackOne:
             len(nms_candidates),
         )
 
-    def _trust_score(self, best: Candidate, pred_bbox: BBox) -> Tuple[float, bool]:
-        # Do not cap by raw match. For tiny UAV, response shape is often more useful.
-        psr = _candidate_metric(best, 'psr')
-        margin = _candidate_metric(best, 'peak_margin')
-        ratio = _candidate_metric(best, 'peak_ratio', 1.0)
-        psr_s = 1.0 / (1.0 + np.exp(-(psr - 4.0) / 1.5))
-        margin_s = 1.0 / (1.0 + np.exp(-(margin - 0.05) / 0.03))
-        ratio_s = 1.0 / (1.0 + np.exp(-(ratio - 1.20) / 0.15))
-        shape = float(0.45 * psr_s + 0.35 * margin_s + 0.20 * ratio_s)
-        if self.current_bbox is not None:
-            pcx, pcy = bbox_center(self.current_bbox)
-            cx, cy = bbox_center(pred_bbox)
-            max_jump = max(20.0, 8.0 * max(self.current_bbox[2], self.current_bbox[3]))
-            motion_s = float(np.exp(-((cx - pcx) ** 2 + (cy - pcy) ** 2) / (2.0 * max_jump * max_jump)))
-            trust = 0.85 * shape + 0.15 * motion_s
+    def _active_score(self, best: Candidate) -> Tuple[float, bool]:
+        if self.state == TrackState.LOST:
+            score = float(getattr(best, 'recovery_score', 0.0))
+            threshold = float(getattr(self.cfg, 'recovery_score_thr', getattr(self.cfg, 'uetrack_trust_thr', 0.45)))
         else:
-            trust = shape
-        good = trust >= float(getattr(self.cfg, 'uetrack_trust_thr', 0.45))
-        return float(np.clip(trust, 0.0, 1.0)), bool(good)
+            score = float(getattr(best, 'tracking_score', 0.0))
+            threshold = float(getattr(self.cfg, 'tracking_score_thr', getattr(self.cfg, 'uetrack_trust_thr', 0.45)))
+        return float(np.clip(score, 0.0, 1.0)), bool(score >= threshold)
 
     def _blend_predicted_size(self, pred_bbox: BBox) -> tuple[BBox, float]:
         key = 'size_pred_blend_tiny' if self.cfg.profile == 'tiny_uav' else 'size_pred_blend_generic'
@@ -331,7 +401,7 @@ class AegisTrackOne:
         )
         if best is None:
             bbox = self.current_bbox
-            trust = 0.0
+            active_score = 0.0
             good = False
             decision = Decision.HOLD_LAST_GOOD
             size_source = 'hold_no_motion_candidate' if candidates else 'hold_no_candidates'
@@ -349,11 +419,11 @@ class AegisTrackOne:
             raw_pred_bbox = clamp_bbox(best.bbox, W, H)
             pred_bbox, size_blend = self._blend_predicted_size(raw_pred_bbox)
             pred_bbox = clamp_bbox(pred_bbox, W, H)
-            trust, shape_good = self._trust_score(best, pred_bbox)
+            active_score, score_good = self._active_score(best)
             motion_ok = bool(getattr(best, 'motion_ok', True))
             jump_px = float(getattr(best, 'jump_px', selected_jump_px))
             max_jump_px = float(getattr(best, 'max_jump_px', selected_max_jump_px))
-            good = bool(shape_good and motion_ok)
+            good = bool(score_good and (motion_ok or self.state == TrackState.LOST))
             if self.state == TrackState.TRACKING:
                 if good:
                     bbox = pred_bbox
@@ -366,7 +436,7 @@ class AegisTrackOne:
                     self.bad_count += 1
                     # Do not jump to a far false peak in TRACKING. Hold last bbox until LOST.
                     bbox = self.current_bbox if self.current_bbox is not None else pred_bbox
-                    decision = Decision.VERIFY_MORE
+                    decision = Decision.HOLD_LAST_GOOD
                     size_source = 'hold_motion' if not motion_ok else 'predicted_uncertain'
                     if self.bad_count >= int(getattr(self.cfg, 'uetrack_lost_frames', 3)):
                         self.state = TrackState.LOST
@@ -377,7 +447,8 @@ class AegisTrackOne:
                 # In LOST, large motion is allowed. Use candidate as tentative recovery anchor.
                 bbox = pred_bbox
                 size_source = 'recovered'
-                if shape_good:
+                recovery_verified = bool(getattr(best, 'recovery_verifier_ok', False))
+                if score_good and recovery_verified:
                     self.pending_recovery_bbox = pred_bbox
                     self.good_count += 1
                     decision = Decision.REINIT_QUARANTINED
@@ -388,6 +459,8 @@ class AegisTrackOne:
                 else:
                     self.good_count = 0
                     decision = Decision.LOST
+                    if not recovery_verified:
+                        size_source = 'rejected_recovery_verifier'
 
         bbox = clamp_bbox(bbox, W, H)
         old_cx, old_cy = bbox_center(self.current_bbox)
@@ -397,7 +470,7 @@ class AegisTrackOne:
         if good and self.state == TrackState.TRACKING:
             self.last_good_bbox = bbox
             # stable size is a reference only, updated from accepted prediction.
-            self.stable_box.update(Candidate(bbox=bbox, source=best.source if best else None, local_score=float(trust)))
+            self.stable_box.update(bbox)
         self.prev_frame = frame.copy()
         elapsed = max(1e-6, time.perf_counter() - t0)
         scores = {
@@ -406,7 +479,23 @@ class AegisTrackOne:
             'peak_margin': _candidate_metric(best, 'peak_margin') if best else 0.0,
             'peak_ratio': _candidate_metric(best, 'peak_ratio', 1.0) if best else 1.0,
             'psr': _candidate_metric(best, 'psr') if best else 0.0,
-            'trust_score': float(trust),
+            'tracking_score': float(getattr(best, 'tracking_score', 0.0)) if best else 0.0,
+            'recovery_score': float(getattr(best, 'recovery_score', 0.0)) if best else 0.0,
+            'active_score': float(active_score),
+            'response_shape_score': float(getattr(best, 'response_shape_score', 0.0)) if best else 0.0,
+            'motion_score': float(getattr(best, 'motion_score', 0.0)) if best else 0.0,
+            'identity_score': float(getattr(best, 'identity_score', 0.0)) if best else 0.0,
+            'size_prior_score': float(getattr(best, 'size_prior_score', 0.0)) if best else 0.0,
+            'objectness_quality_score': float(getattr(best, 'objectness_quality_score', 0.0)) if best else 0.0,
+            'recovery_verifier_ok': float(getattr(best, 'recovery_verifier_ok', False)) if best else 0.0,
+            'recovery_shape_ok': float(getattr(best, 'recovery_shape_ok', False)) if best else 0.0,
+            'recovery_identity_ok': float(getattr(best, 'recovery_identity_ok', False)) if best else 0.0,
+            'recovery_size_ok': float(getattr(best, 'recovery_size_ok', False)) if best else 0.0,
+            'recovery_min_shape_score': float(getattr(self.cfg, 'recovery_min_shape_score', 0.45)),
+            'recovery_min_identity_score': float(getattr(self.cfg, 'recovery_min_identity_score', 0.10)),
+            'recovery_min_size_prior_score': float(getattr(self.cfg, 'recovery_min_size_prior_score', 0.35)),
+            'objectness': float(best.objectness) if best else 0.0,
+            'quality': float(best.quality) if best else 0.0,
             'bbox_size_source': size_source,
             'pred_w': float(getattr(best, 'predicted_size', (bbox[2], bbox[3]))[0]) if best else bbox[2],
             'pred_h': float(getattr(best, 'predicted_size', (bbox[2], bbox[3]))[1]) if best else bbox[3],
@@ -432,10 +521,9 @@ class AegisTrackOne:
             target_bbox=bbox,
             state=self.state,
             decision=decision,
-            confidence=float(trust),
+            confidence=float(active_score),
             scores=scores,
             quality={'bbox_size_source': size_source, 'select_reason': select_reason},
-            memory_update=False,
             candidates=candidates,
             reason=[size_source, select_reason],
             fps=1.0 / elapsed,

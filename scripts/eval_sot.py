@@ -37,12 +37,11 @@ def print_checkpoint_debug(ckpt_path: str, tracker: AegisTrackOne):
 
 @torch.no_grad()
 def raw_local_candidates(tracker: AegisTrackOne, frame):
-    if not tracker.initialized or tracker.last_good_bbox is None:
+    if not tracker.initialized or tracker.current_bbox is None:
         return []
-    h, w = frame.shape[:2]
-    affine = tracker.egomotion.estimate(tracker.prev_frame, frame)
-    warped_bbox = tracker.egomotion.warp_bbox(tracker.last_good_bbox, affine, w, h)
-    crop, meta = crop_with_context(frame, warped_bbox, tracker._adaptive_crop_side(frame))
+    anchor, _ = tracker._select_anchor()
+    crop_policy = tracker._adaptive_crop_policy(frame, anchor)
+    crop, meta = crop_with_context(frame, anchor, crop_policy.crop_side)
     local_out = tracker.local_core.forward_local(frame, crop, meta, tracker.stable_box.stable_size, tracker.state)
     return local_out.topk_candidates
 
@@ -70,9 +69,6 @@ def evaluate_sot(
     target_switch_count = 0
     bbox_explosion_count = 0
     bad_state_commit_count = 0
-    update_allowed_count = 0
-    update_blocked_count = 0
-    bad_memory_update_count = 0
     recovery_attempts = 0
     recovery_success = 0
     false_reinit_count = 0
@@ -137,10 +133,7 @@ def evaluate_sot(
                     candidate_frames += 1
                     target_switch_count += int(out.scores.get('switch_risk', 0.0) > 0.5)
                     bbox_explosion_count += int(bbox_explosion(out.target_bbox, stable_size) > 0.0)
-                    bad_state_commit_count += int(out.decision in (Decision.ACCEPT_RAW, Decision.ACCEPT_CENTER_CLAMP_SIZE) and iou < 0.3)
-                    update_allowed_count += int(out.memory_update)
-                    update_blocked_count += int(not out.memory_update)
-                    bad_memory_update_count += int(out.memory_update and iou < 0.3)
+                    bad_state_commit_count += int(out.decision == Decision.ACCEPT_RAW and iou < 0.3)
                     recovery_attempts += int(out.decision == Decision.REINIT_QUARANTINED)
                     recovery_success += int(out.decision == Decision.REINIT_QUARANTINED and iou >= 0.3)
                     false_reinit_count += int(out.decision == Decision.REINIT_QUARANTINED and iou < 0.3)
@@ -170,9 +163,6 @@ def evaluate_sot(
         'drift/target_switch_count': float(target_switch_count),
         'drift/bbox_explosion_count': float(bbox_explosion_count),
         'drift/bad_state_commit_count': float(bad_state_commit_count),
-        'memory/update_allowed_count': float(update_allowed_count),
-        'memory/update_blocked_count': float(update_blocked_count),
-        'memory/bad_memory_update_count': float(bad_memory_update_count),
         'recovery/success_rate': recovery_success / recovery_attempts if recovery_attempts else 0.0,
         'recovery/false_reinit_count': float(false_reinit_count),
         'recovery/time_to_recover_mean': sum(time_to_recover) / len(time_to_recover) if time_to_recover else 0.0,

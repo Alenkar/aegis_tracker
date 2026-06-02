@@ -151,10 +151,6 @@ def local_core_loss(out, gt_bbox, cfg: AegisConfig):
     }
 
 
-def decision_loss(logits, labels):
-    return F.binary_cross_entropy_with_logits(logits, labels)
-
-
 def ranking_margin_loss(pos_scores, neg_scores, margin=0.2):
     if pos_scores.numel() == 0 or neg_scores.numel() == 0:
         return torch.zeros((), device=pos_scores.device if pos_scores.numel() else neg_scores.device)

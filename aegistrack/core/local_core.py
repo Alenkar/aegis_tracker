@@ -118,7 +118,6 @@ class LocalCore(nn.Module):
         self.token_proj = nn.Sequential(nn.LayerNorm(d), nn.Linear(d, d), nn.GELU(), nn.Linear(d, d))
         self.template_tensor: Optional[torch.Tensor] = None
         self.initial_template_tensor: Optional[torch.Tensor] = None
-        self.dynamic_template_tensor: Optional[torch.Tensor] = None
         self.to(cfg.device)
 
     def initialize(self, frame, init_bbox: BBox):
@@ -126,32 +125,12 @@ class LocalCore(nn.Module):
         crop, _ = crop_with_context(frame, init_bbox, side)
         tensor = crop_to_tensor(crop, self.cfg.template_size, self.cfg.device)
         self.initial_template_tensor = tensor.detach().clone()
-        self.dynamic_template_tensor = tensor.detach().clone()
         self.template_tensor = tensor.detach().clone()
 
     def runtime_template(self) -> torch.Tensor:
         if self.initial_template_tensor is None:
             raise RuntimeError('LocalCore is not initialized. Call initialize(frame, bbox).')
-        if not getattr(self.cfg, 'dynamic_template_enabled', False) or self.dynamic_template_tensor is None:
-            return self.initial_template_tensor
-        tiny = getattr(self.cfg, 'profile', 'tiny_uav') == 'tiny_uav'
-        mix = float(getattr(self.cfg, 'dynamic_template_mix_tiny' if tiny else 'dynamic_template_mix_generic', 0.15 if tiny else 0.35))
-        return (1.0 - mix) * self.initial_template_tensor + mix * self.dynamic_template_tensor
-
-    @torch.no_grad()
-    def update_dynamic_template(self, frame, bbox: BBox, score: float, jump_px: float = 0.0):
-        if not getattr(self.cfg, 'dynamic_template_enabled', False):
-            return False
-        if self.initial_template_tensor is None or self.dynamic_template_tensor is None:
-            return False
-        if score < float(getattr(self.cfg, 'dynamic_template_score_thr', 0.60)):
-            return False
-        side = max(bbox[2], bbox[3]) * 4.0 + 16.0
-        crop, _ = crop_with_context(frame, bbox, side)
-        new_tensor = crop_to_tensor(crop, self.cfg.template_size, self.cfg.device).detach()
-        lr = float(getattr(self.cfg, 'dynamic_template_lr_tiny', 0.01))
-        self.dynamic_template_tensor.mul_(1.0 - lr).add_(new_tensor, alpha=lr)
-        return True
+        return self.initial_template_tensor
 
     def _template_region(self, zf: torch.Tensor) -> torch.Tensor:
         B, C, H, W = zf.shape
@@ -237,10 +216,8 @@ class LocalCore(nn.Module):
         H, W = logits.shape[-2:]
         if state == 'TRACKING':
             w = float(getattr(self.cfg, 'window_weight_tracking', 0.10))
-        elif state == 'LOST':
-            w = float(getattr(self.cfg, 'window_weight_lost', 0.0))
         else:
-            w = float(getattr(self.cfg, 'window_weight_uncertain', 0.02))
+            w = float(getattr(self.cfg, 'window_weight_lost', 0.0))
         if w > 0:
             wy = torch.hann_window(H, device=logits.device)
             wx = torch.hann_window(W, device=logits.device)
