@@ -39,10 +39,11 @@ def print_checkpoint_debug(ckpt_path: str, tracker: AegisTrackOne):
 def raw_local_candidates(tracker: AegisTrackOne, frame):
     if not tracker.initialized or tracker.current_bbox is None:
         return []
-    anchor, _ = tracker._select_anchor()
-    crop_policy = tracker._adaptive_crop_policy(frame, anchor)
+    anchor, _ = tracker._anchor()
+    crop_policy = tracker._crop_policy(frame, anchor)
     crop, meta = crop_with_context(frame, anchor, crop_policy.crop_side)
-    local_out = tracker.local_core.forward_local(frame, crop, meta, tracker.stable_box.stable_size, tracker.state)
+    stable_size = (tracker.current_bbox[2], tracker.current_bbox[3])
+    local_out = tracker.local_core.forward_local(frame, crop, meta, stable_size, tracker.state)
     return local_out.topk_candidates
 
 
@@ -134,9 +135,9 @@ def evaluate_sot(
                     target_switch_count += int(out.scores.get('switch_risk', 0.0) > 0.5)
                     bbox_explosion_count += int(bbox_explosion(out.target_bbox, stable_size) > 0.0)
                     bad_state_commit_count += int(out.decision == Decision.ACCEPT_RAW and iou < 0.3)
-                    recovery_attempts += int(out.decision == Decision.REINIT_QUARANTINED)
-                    recovery_success += int(out.decision == Decision.REINIT_QUARANTINED and iou >= 0.3)
-                    false_reinit_count += int(out.decision == Decision.REINIT_QUARANTINED and iou < 0.3)
+                    recovery_attempts += int(out.state == TrackState.TRACKING and out.decision == Decision.ACCEPT_RAW and lost_start is not None)
+                    recovery_success += int(out.state == TrackState.TRACKING and out.decision == Decision.ACCEPT_RAW and lost_start is not None and iou >= 0.3)
+                    false_reinit_count += int(out.state == TrackState.TRACKING and out.decision == Decision.ACCEPT_RAW and lost_start is not None and iou < 0.3)
                     tracked_frames += 1
                     if out.state == TrackState.LOST:
                         lost_frames += 1

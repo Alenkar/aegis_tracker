@@ -11,7 +11,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--device', default='cpu')
     args = ap.parse_args()
-    cfg = AegisConfig(device=args.device, depth=1, embed_dim=64, num_heads=4, search_size=128, template_size=64, patch_size=16, topk_tracking=2, topk_lost=2)  # fast smoke-test config
+    cfg = AegisConfig(device=args.device, local_feature_dim=64, search_size=128, template_size=64, topk_tracking=2, topk_lost=2)
     tracker = AegisTrackOne(cfg)
     frame0 = np.zeros((360, 640, 3), dtype=np.uint8)
     cv2.circle(frame0, (320, 180), 3, (255,255,255), -1)

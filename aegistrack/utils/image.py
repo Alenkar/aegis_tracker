@@ -24,7 +24,15 @@ def crop_with_context(frame: np.ndarray, bbox_or_center, side: float):
     crop = frame[y1c:y2c, x1c:x2c]
     if any(v > 0 for v in (pad_l, pad_t, pad_r, pad_b)):
         crop = cv2.copyMakeBorder(crop, pad_t, pad_b, pad_l, pad_r, cv2.BORDER_REPLICATE)
-    meta = {"x1": float(x1), "y1": float(y1), "side": float(side), "frame_w": float(W), "frame_h": float(H)}
+    meta = {
+        "x1": float(x1),
+        "y1": float(y1),
+        "side": float(side),
+        "crop_w": float(max(1, x2 - x1)),
+        "crop_h": float(max(1, y2 - y1)),
+        "frame_w": float(W),
+        "frame_h": float(H),
+    }
     return crop, meta
 
 
@@ -38,11 +46,13 @@ def crop_to_tensor(crop: np.ndarray, size: int, device: str):
 
 
 def crop_point_to_frame(px: float, py: float, meta: Dict[str, float], input_size: int):
-    scale = meta["side"] / float(input_size)
-    return meta["x1"] + px * scale, meta["y1"] + py * scale
+    scale_x = float(meta.get("crop_w", meta["side"])) / float(input_size)
+    scale_y = float(meta.get("crop_h", meta["side"])) / float(input_size)
+    return meta["x1"] + px * scale_x, meta["y1"] + py * scale_y
 
 
 def frame_bbox_to_crop(b: BBox, meta: Dict[str, float], input_size: int) -> BBox:
     x, y, w, h = b
-    scale = float(input_size) / meta["side"]
-    return (x - meta["x1"]) * scale, (y - meta["y1"]) * scale, w * scale, h * scale
+    scale_x = float(input_size) / float(meta.get("crop_w", meta["side"]))
+    scale_y = float(input_size) / float(meta.get("crop_h", meta["side"]))
+    return (x - meta["x1"]) * scale_x, (y - meta["y1"]) * scale_y, w * scale_x, h * scale_y

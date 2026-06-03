@@ -48,7 +48,7 @@ def make_center_targets(gt_bbox, feat_h: int, feat_w: int, search_size: int, cfg
     yy, xx = torch.meshgrid(torch.arange(feat_h, device=device), torch.arange(feat_w, device=device), indexing='ij')
     yy = (yy.float() + 0.5)[None]
     xx = (xx.float() + 0.5)[None]
-    feature_stride = float(getattr(cfg, 'local_feature_stride', cfg.patch_size))
+    feature_stride = float(cfg.local_feature_stride)
     sigma = cfg.center_sigma_factor * torch.sqrt(gt_bbox[:, 2].clamp_min(1) * gt_bbox[:, 3].clamp_min(1)) / feature_stride
     sigma = torch.clamp(sigma, min=max(1.0, float(cfg.center_sigma_min)))
     target = torch.exp(-((xx - gx[:, None, None]) ** 2 + (yy - gy[:, None, None]) ** 2) / (2 * sigma[:, None, None] ** 2 + 1e-6))
@@ -61,49 +61,6 @@ def focal_bce_logits(logits: torch.Tensor, target: torch.Tensor, alpha=0.25, gam
     pt = prob * target + (1 - prob) * (1 - target)
     w = alpha * target + (1 - alpha) * (1 - target)
     return (w * (1 - pt).pow(gamma) * ce).mean()
-
-
-def token_contrastive_loss(out, gt_bbox, cfg: AegisConfig):
-    weight = float(getattr(cfg, 'memory_loss_weight', 0.0))
-    if weight <= 0 or 'token_map' not in out or 'target_token' not in out:
-        device = gt_bbox.device
-        return torch.zeros((), device=device)
-
-    token_map = out['token_map']
-    target_token = F.normalize(out['target_token'], dim=-1)
-    response = out['response_logits'][:, 0].detach()
-    B, C, H, W = token_map.shape
-    feature_stride = float(cfg.search_size) / float(W)
-
-    cx = gt_bbox[:, 0] + gt_bbox[:, 2] / 2
-    cy = gt_bbox[:, 1] + gt_bbox[:, 3] / 2
-    gx = cx / feature_stride
-    gy = cy / feature_stride
-    ix = torch.clamp(gx.long(), 0, W - 1)
-    iy = torch.clamp(gy.long(), 0, H - 1)
-
-    yy, xx = torch.meshgrid(torch.arange(H, device=gt_bbox.device), torch.arange(W, device=gt_bbox.device), indexing='ij')
-    losses = []
-    neg_k = int(getattr(cfg, 'memory_loss_neg_topk', 8))
-    radius = float(getattr(cfg, 'memory_loss_gt_exclusion_radius', 2.5))
-    temperature = float(getattr(cfg, 'memory_loss_temperature', 0.10))
-    for b in range(B):
-        pos = token_map[b, :, iy[b], ix[b]]
-        dist = torch.sqrt((xx.float() - gx[b]) ** 2 + (yy.float() - gy[b]) ** 2)
-        valid_neg = dist > radius
-        neg_scores = response[b].masked_fill(~valid_neg, -1e9).flatten()
-        k = min(neg_k, int(valid_neg.sum().item()))
-        if k <= 0:
-            continue
-        neg_idx = torch.topk(neg_scores, k=k).indices
-        neg = token_map[b].flatten(1).transpose(0, 1)[neg_idx]
-        keys = torch.cat([pos.unsqueeze(0), neg], dim=0)
-        logits = torch.mv(keys, target_token[b]) / max(temperature, 1e-6)
-        labels = torch.zeros((), device=gt_bbox.device, dtype=torch.long)
-        losses.append(F.cross_entropy(logits.unsqueeze(0), labels.unsqueeze(0)))
-    if not losses:
-        return torch.zeros((), device=gt_bbox.device)
-    return torch.stack(losses).mean()
 
 
 def local_core_loss(out, gt_bbox, cfg: AegisConfig):
@@ -157,7 +114,7 @@ def local_core_loss(out, gt_bbox, cfg: AegisConfig):
     l_corr = torch.zeros((), device=device)
     if 'corr' in out and out['corr'] is not None:
         l_corr = F.binary_cross_entropy(out['corr'].clamp(1e-5, 1 - 1e-5), target_center.clamp(0, 1))
-    l_memory = token_contrastive_loss(out, gt_bbox, cfg)
+    l_memory = torch.zeros((), device=device)
 
     # The bbox branch is trained directly, but not allowed to overwhelm response learning.
     total = (
@@ -170,7 +127,6 @@ def local_core_loss(out, gt_bbox, cfg: AegisConfig):
         + 1.0 * l_l1
         + 1.0 * l_offset
         + 1.0 * l_logwh
-        + float(getattr(cfg, 'memory_loss_weight', 0.0)) * l_memory
     )
     with torch.no_grad():
         wr = (pred_w / gt_bbox[:, 2].clamp_min(1e-6)).mean()

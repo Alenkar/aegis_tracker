@@ -66,8 +66,8 @@ def main():
     ap.add_argument('--max-frames', type=int, default=0, help='Stop after this many tracked frames; 0 means run to end of video.')
     ap.add_argument('--stop-on-lost', action='store_true', help='Stop after the first LOST tracker state.')
     ap.add_argument('--csv-log', default='')
-    ap.add_argument('--delete-score-thr', type=float, default=0.5,
-                    help='Terminate current track completely when confidence is below this threshold. After deletion, tracking stops until manual reinit with R.')
+    ap.add_argument('--delete-score-thr', type=float, default=0.0,
+                    help='Terminate current track completely when confidence is below this threshold. 0 disables automatic deletion.')
     args = ap.parse_args()
 
     cfg = load_aegis_config(args.config, device=args.device)
@@ -77,7 +77,7 @@ def main():
     cap = cv2.VideoCapture(args.video)
     fps_in = cap.get(cv2.CAP_PROP_FPS) or 25
 
-    cap.set(cv2.CAP_PROP_POS_FRAMES, int(fps_in * 83))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, int(fps_in * 75))
 
     ok, frame = cap.read()
     if not ok:
@@ -91,7 +91,13 @@ def main():
     csv_f = open(args.csv_log, 'w', newline='', encoding='utf-8') if args.csv_log else None
     csv_writer = None
     if csv_f is not None:
-        fields = ['frame','state','decision','bbox_x','bbox_y','bbox_w','bbox_h','confidence','active_score','tracking_score','recovery_score','response_shape_score','motion_score','memory_score','memory_q25','memory_q50','memory_q75','distractor_penalty','memory_updated','memory_count','stable_memory_count','recent_memory_count','distractor_count','size_prior_score','objectness_quality_score','recovery_verifier_ok','recovery_shape_ok','recovery_memory_ok','recovery_size_ok','objectness','quality','match_score','second_score','peak_margin','peak_ratio','psr','bbox_size_source','pred_w','pred_h','stable_w','stable_h','size_blend','bbox_decode_center_window','bbox_decode_size_window','bad_count','good_count','anchor_source','motion_ok','jump_px','max_jump_px','selection_score','raw_topk_count','nms_topk_count','track_deleted','tracking_active','time_ms','fps']
+        fields = [
+            'frame', 'state', 'decision', 'bbox_x', 'bbox_y', 'bbox_w', 'bbox_h',
+            'confidence', 'match_score', 'objectness', 'quality', 'psr', 'peak_margin',
+            'motion_ok', 'jump_px', 'max_jump_px', 'bad_count', 'good_count',
+            'anchor_source', 'bbox_size_source', 'raw_topk_count', 'nms_topk_count',
+            'track_deleted', 'tracking_active', 'time_ms', 'fps',
+        ]
         csv_writer = csv.DictWriter(csv_f, fieldnames=fields)
         csv_writer.writeheader()
 
@@ -133,29 +139,23 @@ def main():
         inst_fps = 1000.0 / max(time_ms, 1e-6)
         bbox = out.target_bbox
         scores = out.scores
-        track_deleted = bool(out.confidence < args.delete_score_thr)
+        track_deleted = bool(args.delete_score_thr > 0 and out.confidence < args.delete_score_thr)
         if track_deleted:
             tracker.terminate()
             tracking_active = False
-        draw_bbox = None if track_deleted else bbox
+        draw_bbox = None if (track_deleted or out.state.value == 'LOST') else bbox
         if frame_idx > args.warmup_frames:
             times_ms.append(time_ms)
         if args.log_every and frame_idx % args.log_every == 0:
             print(
                 f"frame={frame_idx} state={out.state.value} decision={out.decision.value} "
                 f"deleted={int(track_deleted)} active={int(tracking_active)} conf={out.confidence:.3f} "
-                f"trk={scores.get('tracking_score',0):.3f} rec={scores.get('recovery_score',0):.3f} "
-                f"shape={scores.get('response_shape_score',0):.3f} mot={scores.get('motion_score',0):.3f} "
-                f"mem={scores.get('memory_score',0):.3f} q50={scores.get('memory_q50',1):.3f} dis={scores.get('distractor_penalty',0):.3f} "
-                f"sizep={scores.get('size_prior_score',0):.3f} oq={scores.get('objectness_quality_score',0):.3f} "
-                f"ver={scores.get('recovery_verifier_ok',0):.0f}/{scores.get('recovery_shape_ok',0):.0f}{scores.get('recovery_memory_ok',0):.0f}{scores.get('recovery_size_ok',0):.0f} "
                 f"match={scores.get('match_score',0):.3f} "
                 f"psr={scores.get('psr',0):.2f} margin={scores.get('peak_margin',0):.3f} "
-                f"bbox={fmt_bbox(bbox)} pred=({scores.get('pred_w',0):.1f},{scores.get('pred_h',0):.1f}) "
-                f"stable=({scores.get('stable_w',0):.1f},{scores.get('stable_h',0):.1f}) "
+                f"bbox={fmt_bbox(bbox)} "
                 f"anchor={scores.get('anchor_source','')} source={scores.get('bbox_size_source','')} "
                 f"motion_ok={scores.get('motion_ok',0):.0f} jump={scores.get('jump_px',0):.1f}/{scores.get('max_jump_px',0):.1f} "
-                f"sel={scores.get('selection_score',0):.3f} topk={int(scores.get('raw_topk_count',0))}/{int(scores.get('nms_topk_count',0))} "
+                f"topk={int(scores.get('raw_topk_count',0))}/{int(scores.get('nms_topk_count',0))} "
                 f"time_ms={time_ms:.2f} fps={inst_fps:.1f}",
                 flush=True,
             )
@@ -166,46 +166,18 @@ def main():
                 'decision': out.decision.value,
                 'bbox_x': bbox[0], 'bbox_y': bbox[1], 'bbox_w': bbox[2], 'bbox_h': bbox[3],
                 'confidence': out.confidence,
-                'active_score': scores.get('active_score', out.confidence),
-                'tracking_score': scores.get('tracking_score', 0.0),
-                'recovery_score': scores.get('recovery_score', 0.0),
-                'response_shape_score': scores.get('response_shape_score', 0.0),
-                'motion_score': scores.get('motion_score', 0.0),
-                'memory_score': scores.get('memory_score', 0.0),
-                'memory_q25': scores.get('memory_q25', 1.0),
-                'memory_q50': scores.get('memory_q50', 1.0),
-                'memory_q75': scores.get('memory_q75', 1.0),
-                'distractor_penalty': scores.get('distractor_penalty', 0.0),
-                'memory_updated': scores.get('memory_updated', 0.0),
-                'memory_count': scores.get('memory_count', 0.0),
-                'stable_memory_count': scores.get('stable_memory_count', 0.0),
-                'recent_memory_count': scores.get('recent_memory_count', 0.0),
-                'distractor_count': scores.get('distractor_count', 0.0),
-                'size_prior_score': scores.get('size_prior_score', 0.0),
-                'objectness_quality_score': scores.get('objectness_quality_score', 0.0),
-                'recovery_verifier_ok': scores.get('recovery_verifier_ok', 0.0),
-                'recovery_shape_ok': scores.get('recovery_shape_ok', 0.0),
-                'recovery_memory_ok': scores.get('recovery_memory_ok', 0.0),
-                'recovery_size_ok': scores.get('recovery_size_ok', 0.0),
+                'match_score': scores.get('match_score', out.confidence),
                 'objectness': scores.get('objectness', 0.0),
                 'quality': scores.get('quality', 0.0),
-                'match_score': scores.get('match_score', 0.0),
-                'second_score': scores.get('second_score', 0.0),
                 'peak_margin': scores.get('peak_margin', 0.0),
-                'peak_ratio': scores.get('peak_ratio', 1.0),
                 'psr': scores.get('psr', 0.0),
-                'bbox_size_source': scores.get('bbox_size_source', ''),
-                'pred_w': scores.get('pred_w', 0.0), 'pred_h': scores.get('pred_h', 0.0),
-                'stable_w': scores.get('stable_w', 0.0), 'stable_h': scores.get('stable_h', 0.0),
-                'size_blend': scores.get('size_blend', 1.0),
-                'bbox_decode_center_window': scores.get('bbox_decode_center_window', 1.0),
-                'bbox_decode_size_window': scores.get('bbox_decode_size_window', 1.0),
-                'bad_count': scores.get('bad_count', 0.0), 'good_count': scores.get('good_count', 0.0),
-                'anchor_source': scores.get('anchor_source', ''),
                 'motion_ok': scores.get('motion_ok', 0.0),
                 'jump_px': scores.get('jump_px', 0.0),
                 'max_jump_px': scores.get('max_jump_px', 0.0),
-                'selection_score': scores.get('selection_score', 0.0),
+                'bad_count': scores.get('bad_count', 0.0),
+                'good_count': scores.get('good_count', 0.0),
+                'anchor_source': scores.get('anchor_source', ''),
+                'bbox_size_source': scores.get('bbox_size_source', ''),
                 'raw_topk_count': scores.get('raw_topk_count', 0.0),
                 'nms_topk_count': scores.get('nms_topk_count', 0.0),
                 'track_deleted': int(track_deleted),
@@ -215,11 +187,7 @@ def main():
         if args.stop_on_lost and out.state.value == 'LOST':
             print(
                 f"first_lost frame={frame_idx} bbox={fmt_bbox(bbox)} conf={out.confidence:.3f} "
-                f"trk={scores.get('tracking_score',0):.3f} rec={scores.get('recovery_score',0):.3f} "
-                f"shape={scores.get('response_shape_score',0):.3f} mot={scores.get('motion_score',0):.3f} "
-                f"mem={scores.get('memory_score',0):.3f} q50={scores.get('memory_q50',1):.3f} dis={scores.get('distractor_penalty',0):.3f} "
-                f"sizep={scores.get('size_prior_score',0):.3f} oq={scores.get('objectness_quality_score',0):.3f} "
-                f"ver={scores.get('recovery_verifier_ok',0):.0f}/{scores.get('recovery_shape_ok',0):.0f}{scores.get('recovery_memory_ok',0):.0f}{scores.get('recovery_size_ok',0):.0f}",
+                f"match={scores.get('match_score',0):.3f} jump={scores.get('jump_px',0):.1f}/{scores.get('max_jump_px',0):.1f}",
                 flush=True,
             )
             break

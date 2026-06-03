@@ -21,7 +21,6 @@ class Decision(str, Enum):
     ACCEPT_RAW = "ACCEPT_RAW"
     HOLD_LAST_GOOD = "HOLD_LAST_GOOD"
     LOST = "LOST"
-    REINIT_QUARANTINED = "REINIT_QUARANTINED"
 
 
 @dataclass
@@ -35,7 +34,6 @@ class Candidate:
     size_score: float = 0.0
     motion_score: float = 0.0
     final_score: float = 0.0
-    visual_emb: Optional[torch.Tensor] = None
     scalar_features: Optional[torch.Tensor] = None
     reason: List[str] = field(default_factory=list)
 
@@ -56,18 +54,10 @@ class Candidate:
 @dataclass
 class LocalOutput:
     best_bbox: BBox
-    center_map: torch.Tensor
-    objectness_map: torch.Tensor
-    quality_map: torch.Tensor
-    size_map: torch.Tensor
-    feature_map: torch.Tensor
     response_map: torch.Tensor
     topk_candidates: List[Candidate]
-    target_token: torch.Tensor
     raw_score: float
     windowed_score: float
-    center_good: bool
-    size_bad: bool
     crop_meta: Dict[str, float]
 
 

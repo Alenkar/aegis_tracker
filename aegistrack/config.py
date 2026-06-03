@@ -76,18 +76,9 @@ class AegisConfig:
     # Images
     template_size: int = 128
     search_size: int = 256
-    patch_size: int = 16  # legacy/ViT patch; localization uses local_feature_stride
     local_feature_stride: int = 4
     local_feature_dim: int = 128
     in_chans: int = 3
-
-    # Backbone
-    embed_dim: int = 192
-    depth: int = 8
-    num_heads: int = 6
-    mlp_ratio: float = 4.0
-    dropout: float = 0.0
-    attn_dropout: float = 0.0
 
     # Search / candidates
     topk_tracking: int = 5
@@ -98,33 +89,6 @@ class AegisConfig:
     center_nms_radius_px: float = 10.0
     center_nms_max_keep_tracking: int = 5
     center_nms_max_keep_lost: int = 8
-    tracking_score_shape_weight: float = 0.70
-    tracking_score_motion_weight: float = 0.30
-    recovery_score_shape_weight: float = 0.35
-    recovery_score_size_weight: float = 0.15
-    recovery_score_objectness_quality_weight: float = 0.15
-    recovery_min_shape_score: float = 0.45
-    recovery_min_size_prior_score: float = 0.35
-    use_temporal_memory: bool = True
-    recovery_score_memory_weight: float = 0.0
-    memory_score_weight_tiny: float = 0.03
-    memory_score_weight_small: float = 0.07
-    memory_score_weight_medium: float = 0.12
-    memory_score_weight_large: float = 0.18
-    memory_distractor_penalty_weight: float = 0.15
-    recovery_require_memory: bool = False
-    memory_stable_size: int = 16
-    memory_recent_size: int = 8
-    memory_distractor_size: int = 24
-    memory_stable_promote_frames: int = 3
-    memory_update_min_tracking_score: float = 0.55
-    memory_update_min_shape_score: float = 0.55
-    memory_update_max_q25: float = 0.35
-    memory_update_max_q50: float = 0.45
-    memory_update_max_q75: float = 0.60
-    memory_distractor_add_topk: int = 3
-    memory_distractor_min_local_score: float = 0.35
-
     # Adaptive FOV
     base_search_factor: float = 18.0
     adaptive_search_min_factor: float = 2.5
@@ -137,27 +101,9 @@ class AegisConfig:
     window_weight_tracking: float = 0.15
     window_weight_lost: float = 0.0
 
-    # BBox stability
-    stable_size_lr_tiny: float = 0.03
-    stable_size_lr_generic: float = 0.10
-    growth_bad_high_tiny: float = 1.8
-    growth_bad_low_tiny: float = 0.55
-    growth_bad_high_generic: float = 2.8
-    growth_bad_low_generic: float = 0.35
-    growth_full_bad: float = 3.0
-    pred_norm_bad: float = 0.35
-    bbox_decode_center_window: int = 3
-    bbox_decode_size_window: int = 3
-
-    # Gates
-    min_raw_score: float = 0.25
-
     # Training
     center_sigma_factor: float = 0.15
     center_sigma_min: float = 1.5
-    tiny_center_positive_px: float = 4.0
-    candidate_positive_iou: float = 0.3
-    rank_margin: float = 0.2
 
     # Pair sampling / train target visibility
     train_search_jitter: float = 0.35
@@ -177,25 +123,17 @@ class AegisConfig:
     blur_bbox_expand_parallel_max_px: float = 6.0
     blur_bbox_expand_perp_px: float = 1.0
     blur_aug_max_bbox_expand_ratio: float = 1.6
-    memory_loss_weight: float = 0.05
-    memory_loss_neg_topk: int = 8
-    memory_loss_gt_exclusion_radius: float = 2.5
-    memory_loss_temperature: float = 0.10
-
     # UETrack-like runtime state
-    uetrack_trust_thr: float = 0.45
     tracking_score_thr: float = 0.45
     recovery_score_thr: float = 0.45
     uetrack_lost_frames: int = 3
-    uetrack_recover_frames: int = 2
+    uetrack_max_tracking_jump_factor: float = 4.0
+    uetrack_max_tracking_jump_min_px: float = 48.0
 
 
     # Core matching / attention-lite
     template_kernel_size: int = 5
     target_gate_min: float = 0.25
-    size_pred_blend_tiny: float = 0.15
-    size_pred_blend_generic: float = 0.35
-
     # Local core correlation prior
     corr_response_weight: float = 0.35
 
@@ -218,15 +156,6 @@ class AegisConfig:
     @property
     def feature_stride(self) -> int:
         return self.local_feature_stride
-
-    @property
-    def template_hw(self) -> int:
-        return self.template_size // self.patch_size
-
-    def growth_limits(self):
-        if self.profile == "tiny_uav":
-            return self.growth_bad_low_tiny, self.growth_bad_high_tiny
-        return self.growth_bad_low_generic, self.growth_bad_high_generic
 
     def to_dict(self) -> dict:
         return asdict(self)

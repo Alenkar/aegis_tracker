@@ -8,7 +8,7 @@ import torch.nn.functional as F
 
 from ..config import AegisConfig
 from ..utils.image import crop_with_context, crop_to_tensor, crop_point_to_frame
-from ..utils.box_ops import make_bbox_from_center, bbox_area
+from ..utils.box_ops import make_bbox_from_center
 from ..candidates.types import Candidate, CandidateSource, LocalOutput, TrackState, BBox
 
 
@@ -54,12 +54,6 @@ class HighResTinyBackbone(nn.Module):
 
 
 class TokenInteraction(nn.Module):
-    """Lightweight UETrack-like target-conditioned interaction.
-
-    This is not a copy of UETrack code. It implements the required principle inside
-    this project: template/search tokens interact before the prediction head, and
-    bbox is predicted from the same target-aware feature map as the response.
-    """
     def __init__(self, dim: int, heads: int = 4):
         super().__init__()
         heads = max(1, min(heads, dim // 32))
@@ -85,18 +79,13 @@ class TokenInteraction(nn.Module):
 
 
 class LocalCore(nn.Module):
-    """UETrack-like short-term core for Aegis.
-
-    Main change versus previous Aegis: bbox is a first-class prediction-head output.
-    It is center-size regression (offset + log w/h), not FCOS ltrb and not stable-size.
-    This avoids stride-imposed lower bounds and lets boxes shrink/enlarge for tiny UAVs.
-    """
+    """Template/search local matcher with direct center-size bbox decode."""
 
     def __init__(self, cfg: AegisConfig):
         super().__init__()
         self.cfg = cfg
         self.feature_stride = int(getattr(cfg, 'local_feature_stride', 4))
-        d = int(getattr(cfg, 'local_feature_dim', cfg.embed_dim))
+        d = int(cfg.local_feature_dim)
         self.dim = d
         self.backbone = HighResTinyBackbone(cfg.in_chans, d, self.feature_stride)
 
@@ -141,9 +130,6 @@ class LocalCore(nn.Module):
         r = k // 2
         return zf[:, :, cy - r:cy + r + 1, cx - r:cx + r + 1]
 
-    def _template_proto(self, zf: torch.Tensor) -> torch.Tensor:
-        return F.normalize(self._template_region(zf).mean(dim=(2, 3)), dim=1)
-
     def _multi_token_corr(self, zf: torch.Tensor, xf: torch.Tensor):
         B, C, H, W = xf.shape
         patch = self._template_region(zf)
@@ -168,10 +154,10 @@ class LocalCore(nn.Module):
         gate_min = float(getattr(self.cfg, 'target_gate_min', 0.25))
         xf_gated = xf * (gate_min + (1.0 - gate_min) * gate)
         fmap = self.fuse(torch.cat([xf_gated, corr_feat, corr_prior], dim=1))
-        return zf, xf, proto, corr_feat, corr_prior, fmap
+        return corr_prior, fmap
 
     def forward_train(self, template: torch.Tensor, search: torch.Tensor) -> Dict[str, torch.Tensor]:
-        zf, xf, proto, corr_feat, corr_prior, fmap = self._fuse_template_search(template, search)
+        corr_prior, fmap = self._fuse_template_search(template, search)
         p = self.pred(fmap)
         center_logits = self.center_head(p)
         objectness_logits = self.obj_head(p)
@@ -181,8 +167,6 @@ class LocalCore(nn.Module):
         response_logits = center_logits + 0.5 * objectness_logits + 0.5 * quality_logits
         if corr_prior is not None and float(getattr(self.cfg, 'corr_response_weight', 0.0)) > 0:
             response_logits = response_logits + float(getattr(self.cfg, 'corr_response_weight', 0.35)) * torch.log(corr_prior.clamp_min(1e-4))
-        target_token = F.normalize(self.token_proj(proto), dim=-1)
-        token_map = F.normalize(self.token_proj(p.permute(0, 2, 3, 1)).permute(0, 3, 1, 2), dim=1)
         return {
             'center_logits': center_logits,
             'objectness_logits': objectness_logits,
@@ -196,22 +180,7 @@ class LocalCore(nn.Module):
             'response_logits': response_logits,
             'response': torch.sigmoid(response_logits),
             'corr': corr_prior,
-            'corr_feat': corr_feat,
-            'fmap': p,
-            'target_token': target_token,
-            'token_map': token_map,
-            'template_features': zf,
-            'search_features': xf,
         }
-
-    @torch.no_grad()
-    def encode_target(self, frame, bbox: BBox) -> torch.Tensor:
-        side = max(bbox[2], bbox[3]) * 4.0 + 16.0
-        crop, _ = crop_with_context(frame, bbox, side)
-        x = crop_to_tensor(crop, self.cfg.template_size, self.cfg.device)
-        f = self.backbone(x)
-        proto = self._template_proto(f)
-        return F.normalize(self.token_proj(proto)[0], dim=0)
 
     def fuse_response(self, out: Dict[str, torch.Tensor], state='TRACKING'):
         logits = out['response_logits']
@@ -239,18 +208,10 @@ class LocalCore(nn.Module):
         raw_score = float(response.max().item())
         return LocalOutput(
             best_bbox=best.bbox,
-            center_map=out['center'][0, 0],
-            objectness_map=out['objectness'][0, 0],
-            quality_map=out['quality'][0, 0],
-            size_map=out['size'][0],
-            feature_map=out['fmap'][0],
             response_map=response,
             topk_candidates=cands,
-            target_token=out['target_token'][0],
             raw_score=raw_score,
             windowed_score=raw_score,
-            center_good=raw_score > float(getattr(self.cfg, 'min_raw_score', 0.20)),
-            size_bad=False,
             crop_meta=crop_meta,
         )
 
@@ -267,74 +228,34 @@ class LocalCore(nn.Module):
         psr = (peak - float(bg.mean().item())) / max(float(bg.std().item()), 1e-6) if bg.numel() > 4 else 0.0
         return second, margin, ratio, psr
 
-    def _peak_window_weights(self, response: torch.Tensor, iy: int, ix: int, window: int):
-        radius = max(0, window // 2)
-        y1, y2 = max(0, iy - radius), min(response.shape[0], iy + radius + 1)
-        x1, x2 = max(0, ix - radius), min(response.shape[1], ix + radius + 1)
-        weights = response[y1:y2, x1:x2].detach().clamp_min(1e-6)
-        weights = weights / weights.sum().clamp_min(1e-6)
-        return y1, y2, x1, x2, weights
-
-    def _decode_center_at_peak(
-        self,
-        response: torch.Tensor,
-        offset: torch.Tensor,
-        iy: int,
-        ix: int,
-        feature_stride: float,
-    ) -> tuple[float, float]:
-        window = int(getattr(self.cfg, 'bbox_decode_center_window', 1))
-        if window <= 1:
-            dx = float(offset[0, iy, ix].item())
-            dy = float(offset[1, iy, ix].item())
-            return (ix + 0.5 + dx) * feature_stride, (iy + 0.5 + dy) * feature_stride
-
-        y1, y2, x1, x2, weights = self._peak_window_weights(response, iy, ix, window)
-        yy, xx = torch.meshgrid(
-            torch.arange(y1, y2, device=response.device, dtype=response.dtype),
-            torch.arange(x1, x2, device=response.device, dtype=response.dtype),
-            indexing='ij',
-        )
-        center_x = (xx + 0.5 + offset[0, y1:y2, x1:x2]) * feature_stride
-        center_y = (yy + 0.5 + offset[1, y1:y2, x1:x2]) * feature_stride
-        return float((center_x * weights).sum().item()), float((center_y * weights).sum().item())
-
-    def _decode_log_size_at_peak(self, response: torch.Tensor, log_size: torch.Tensor, iy: int, ix: int) -> tuple[float, float]:
-        window = int(getattr(self.cfg, 'bbox_decode_size_window', 1))
-        if window <= 1:
-            return float(log_size[0, iy, ix].item()), float(log_size[1, iy, ix].item())
-
-        y1, y2, x1, x2, weights = self._peak_window_weights(response, iy, ix, window)
-        size_patch = log_size[:, y1:y2, x1:x2]
-        decoded = (size_patch * weights.unsqueeze(0)).sum(dim=(1, 2))
-        return float(decoded[0].item()), float(decoded[1].item())
-
     def decode_topk(self, response: torch.Tensor, out: Dict[str, torch.Tensor], crop_meta, k: int) -> List[Candidate]:
         H, W = response.shape
         vals, idxs = torch.topk(response.flatten(), k=min(k, response.numel()))
         offset = out['offset'][0]
         log_size = out['log_size'][0]
-        token_map = out['token_map'][0]
         obj = out['objectness'][0, 0]
         qual = out['quality'][0, 0]
         feature_stride = self.cfg.search_size / float(W)
-        scale = crop_meta['side'] / float(self.cfg.search_size)
+        scale_x = float(crop_meta.get('crop_w', crop_meta['side'])) / float(self.cfg.search_size)
+        scale_y = float(crop_meta.get('crop_h', crop_meta['side'])) / float(self.cfg.search_size)
+        max_w = float(crop_meta.get('crop_w', crop_meta['side'])) * 0.8
+        max_h = float(crop_meta.get('crop_h', crop_meta['side'])) * 0.8
         out_cands: List[Candidate] = []
         for val, idx in zip(vals, idxs):
             iy = int(idx.item() // W)
             ix = int(idx.item() % W)
-            # Decode center from the local response mass, not one raw top-k cell.
-            px, py = self._decode_center_at_peak(response, offset, iy, ix, feature_stride)
+            dx = float(offset[0, iy, ix].item())
+            dy = float(offset[1, iy, ix].item())
+            px = (ix + 0.5 + dx) * feature_stride
+            py = (iy + 0.5 + dy) * feature_stride
             cx, cy = crop_point_to_frame(px, py, crop_meta, self.cfg.search_size)
-            # log_size is in feature-cell units; average a small response-weighted
-            # neighborhood to avoid bbox boundary jitter when adjacent peaks swap.
-            log_w, log_h = self._decode_log_size_at_peak(response, log_size, iy, ix)
+            log_w = float(log_size[0, iy, ix].item())
+            log_h = float(log_size[1, iy, ix].item())
             pred_w_search = float(math.exp(log_w)) * feature_stride
             pred_h_search = float(math.exp(log_h)) * feature_stride
-            pred_w = float(np.clip(pred_w_search * scale, 1.0, crop_meta['side'] * 0.8))
-            pred_h = float(np.clip(pred_h_search * scale, 1.0, crop_meta['side'] * 0.8))
+            pred_w = float(np.clip(pred_w_search * scale_x, 1.0, max_w))
+            pred_h = float(np.clip(pred_h_search * scale_y, 1.0, max_h))
             bbox = make_bbox_from_center(cx, cy, pred_w, pred_h)
-            emb = token_map[:, iy, ix]
             second, margin, ratio, psr = self._response_metrics(response, iy, ix)
             score = float(val.item())
             c = Candidate(
@@ -345,7 +266,6 @@ class LocalCore(nn.Module):
                 objectness=float(obj[iy, ix].item()),
                 quality=float(qual[iy, ix].item()),
                 final_score=score,
-                visual_emb=emb,
             )
             c.reason += [f'second={second:.3f}', f'margin={margin:.3f}', f'ratio={ratio:.2f}', f'psr={psr:.2f}', 'bbox=predicted']
             # dynamic attributes consumed by runtime/logger.
@@ -355,7 +275,5 @@ class LocalCore(nn.Module):
             c.psr = psr
             c.predicted_size = (pred_w, pred_h)
             c.bbox_predicted = bbox
-            c.bbox_decode_center_window = int(getattr(self.cfg, 'bbox_decode_center_window', 1))
-            c.bbox_decode_size_window = int(getattr(self.cfg, 'bbox_decode_size_window', 1))
             out_cands.append(c)
         return out_cands
