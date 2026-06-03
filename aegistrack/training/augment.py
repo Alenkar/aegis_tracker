@@ -4,9 +4,9 @@ import cv2
 import numpy as np
 
 
-def tiny_uav_augment(img):
+def tiny_uav_augment(img, blur: bool = True):
     out = img.copy()
-    if random.random() < 0.35:
+    if blur and random.random() < 0.35:
         k = random.choice([3, 5, 7, 9])
         out = cv2.GaussianBlur(out, (k, k), 0)
     if random.random() < 0.40:

@@ -6,10 +6,7 @@ import random
 import cv2
 import numpy as np
 
-try:
-    import albumentations as A
-except ImportError:  # pragma: no cover - optional dependency
-    A = None
+import albumentations as A
 
 
 def _odd(v: int) -> int:

@@ -141,7 +141,7 @@ def main():
         pbar = tqdm(dl, desc=f'train {ep + 1}/{train_cfg.epochs}')
         sums = {k: 0.0 for k in [
             'loss_total','loss_task','loss_center','loss_box','loss_giou','loss_l1','loss_offset','loss_logwh',
-            'loss_objectness','loss_quality','wr','hr','pred_w_mean','pred_h_mean','gt_w_mean','gt_h_mean'
+            'loss_objectness','loss_quality','loss_memory','wr','hr','pred_w_mean','pred_h_mean','gt_w_mean','gt_h_mean'
         ]}
         n_batches = 0
         for batch in pbar:
@@ -170,6 +170,7 @@ def main():
             sums['loss_logwh'] += float(losses['logwh'].item())
             sums['loss_objectness'] += float(losses['obj'].item())
             sums['loss_quality'] += float(losses['quality'].item())
+            sums['loss_memory'] += float(losses.get('memory', torch.zeros(())).item())
             for key in ['wr','hr','pred_w_mean','pred_h_mean','gt_w_mean','gt_h_mean']:
                 sums[key] += float(losses[key].item())
             n_batches += 1

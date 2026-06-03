@@ -33,7 +33,6 @@ class Candidate:
     quality: float = 0.0
     center_score: float = 0.0
     size_score: float = 0.0
-    identity_score: float = 0.0
     motion_score: float = 0.0
     final_score: float = 0.0
     visual_emb: Optional[torch.Tensor] = None

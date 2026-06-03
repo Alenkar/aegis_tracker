@@ -182,6 +182,7 @@ class LocalCore(nn.Module):
         if corr_prior is not None and float(getattr(self.cfg, 'corr_response_weight', 0.0)) > 0:
             response_logits = response_logits + float(getattr(self.cfg, 'corr_response_weight', 0.35)) * torch.log(corr_prior.clamp_min(1e-4))
         target_token = F.normalize(self.token_proj(proto), dim=-1)
+        token_map = F.normalize(self.token_proj(p.permute(0, 2, 3, 1)).permute(0, 3, 1, 2), dim=1)
         return {
             'center_logits': center_logits,
             'objectness_logits': objectness_logits,
@@ -198,6 +199,7 @@ class LocalCore(nn.Module):
             'corr_feat': corr_feat,
             'fmap': p,
             'target_token': target_token,
+            'token_map': token_map,
             'template_features': zf,
             'search_features': xf,
         }
@@ -312,7 +314,7 @@ class LocalCore(nn.Module):
         vals, idxs = torch.topk(response.flatten(), k=min(k, response.numel()))
         offset = out['offset'][0]
         log_size = out['log_size'][0]
-        fmap = out['fmap'][0]
+        token_map = out['token_map'][0]
         obj = out['objectness'][0, 0]
         qual = out['quality'][0, 0]
         feature_stride = self.cfg.search_size / float(W)
@@ -332,7 +334,7 @@ class LocalCore(nn.Module):
             pred_w = float(np.clip(pred_w_search * scale, 1.0, crop_meta['side'] * 0.8))
             pred_h = float(np.clip(pred_h_search * scale, 1.0, crop_meta['side'] * 0.8))
             bbox = make_bbox_from_center(cx, cy, pred_w, pred_h)
-            emb = F.normalize(self.token_proj(fmap[:, iy, ix].unsqueeze(0))[0], dim=0)
+            emb = token_map[:, iy, ix]
             second, margin, ratio, psr = self._response_metrics(response, iy, ix)
             score = float(val.item())
             c = Candidate(

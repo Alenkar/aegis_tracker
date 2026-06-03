@@ -101,12 +101,29 @@ class AegisConfig:
     tracking_score_shape_weight: float = 0.70
     tracking_score_motion_weight: float = 0.30
     recovery_score_shape_weight: float = 0.35
-    recovery_score_identity_weight: float = 0.35
     recovery_score_size_weight: float = 0.15
     recovery_score_objectness_quality_weight: float = 0.15
     recovery_min_shape_score: float = 0.45
-    recovery_min_identity_score: float = 0.10
     recovery_min_size_prior_score: float = 0.35
+    use_temporal_memory: bool = True
+    recovery_score_memory_weight: float = 0.0
+    memory_score_weight_tiny: float = 0.03
+    memory_score_weight_small: float = 0.07
+    memory_score_weight_medium: float = 0.12
+    memory_score_weight_large: float = 0.18
+    memory_distractor_penalty_weight: float = 0.15
+    recovery_require_memory: bool = False
+    memory_stable_size: int = 16
+    memory_recent_size: int = 8
+    memory_distractor_size: int = 24
+    memory_stable_promote_frames: int = 3
+    memory_update_min_tracking_score: float = 0.55
+    memory_update_min_shape_score: float = 0.55
+    memory_update_max_q25: float = 0.35
+    memory_update_max_q50: float = 0.45
+    memory_update_max_q75: float = 0.60
+    memory_distractor_add_topk: int = 3
+    memory_distractor_min_local_score: float = 0.35
 
     # Adaptive FOV
     base_search_factor: float = 18.0
@@ -160,6 +177,10 @@ class AegisConfig:
     blur_bbox_expand_parallel_max_px: float = 6.0
     blur_bbox_expand_perp_px: float = 1.0
     blur_aug_max_bbox_expand_ratio: float = 1.6
+    memory_loss_weight: float = 0.05
+    memory_loss_neg_topk: int = 8
+    memory_loss_gt_exclusion_radius: float = 2.5
+    memory_loss_temperature: float = 0.10
 
     # UETrack-like runtime state
     uetrack_trust_thr: float = 0.45

@@ -208,8 +208,8 @@ class SOTPairDataset(Dataset):
 
             bz, bx = gts[i], gts[j]
             if self.augment:
-                z = tiny_uav_augment(z)
-                x = tiny_uav_augment(x)
+                z = tiny_uav_augment(z, blur=False)
+                x = tiny_uav_augment(x, blur=False)
 
             max_obj = max(float(bz[2]), float(bz[3]), float(bx[2]), float(bx[3]))
             z_side = max(max(bz[2], bz[3]) * 4.0 + 16.0, float(self.cfg.template_size) * 0.5)

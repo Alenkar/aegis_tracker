@@ -77,7 +77,7 @@ def main():
     cap = cv2.VideoCapture(args.video)
     fps_in = cap.get(cv2.CAP_PROP_FPS) or 25
 
-    cap.set(cv2.CAP_PROP_POS_FRAMES, int(fps_in * 75))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, int(fps_in * 83))
 
     ok, frame = cap.read()
     if not ok:
@@ -91,7 +91,7 @@ def main():
     csv_f = open(args.csv_log, 'w', newline='', encoding='utf-8') if args.csv_log else None
     csv_writer = None
     if csv_f is not None:
-        fields = ['frame','state','decision','bbox_x','bbox_y','bbox_w','bbox_h','confidence','active_score','tracking_score','recovery_score','response_shape_score','motion_score','identity_score','size_prior_score','objectness_quality_score','recovery_verifier_ok','recovery_shape_ok','recovery_identity_ok','recovery_size_ok','objectness','quality','match_score','second_score','peak_margin','peak_ratio','psr','bbox_size_source','pred_w','pred_h','stable_w','stable_h','size_blend','bbox_decode_center_window','bbox_decode_size_window','bad_count','good_count','anchor_source','motion_ok','jump_px','max_jump_px','selection_score','raw_topk_count','nms_topk_count','track_deleted','tracking_active','time_ms','fps']
+        fields = ['frame','state','decision','bbox_x','bbox_y','bbox_w','bbox_h','confidence','active_score','tracking_score','recovery_score','response_shape_score','motion_score','memory_score','memory_q25','memory_q50','memory_q75','distractor_penalty','memory_updated','memory_count','stable_memory_count','recent_memory_count','distractor_count','size_prior_score','objectness_quality_score','recovery_verifier_ok','recovery_shape_ok','recovery_memory_ok','recovery_size_ok','objectness','quality','match_score','second_score','peak_margin','peak_ratio','psr','bbox_size_source','pred_w','pred_h','stable_w','stable_h','size_blend','bbox_decode_center_window','bbox_decode_size_window','bad_count','good_count','anchor_source','motion_ok','jump_px','max_jump_px','selection_score','raw_topk_count','nms_topk_count','track_deleted','tracking_active','time_ms','fps']
         csv_writer = csv.DictWriter(csv_f, fieldnames=fields)
         csv_writer.writeheader()
 
@@ -146,8 +146,9 @@ def main():
                 f"deleted={int(track_deleted)} active={int(tracking_active)} conf={out.confidence:.3f} "
                 f"trk={scores.get('tracking_score',0):.3f} rec={scores.get('recovery_score',0):.3f} "
                 f"shape={scores.get('response_shape_score',0):.3f} mot={scores.get('motion_score',0):.3f} "
-                f"id={scores.get('identity_score',0):.3f} sizep={scores.get('size_prior_score',0):.3f} oq={scores.get('objectness_quality_score',0):.3f} "
-                f"ver={scores.get('recovery_verifier_ok',0):.0f}/{scores.get('recovery_shape_ok',0):.0f}{scores.get('recovery_identity_ok',0):.0f}{scores.get('recovery_size_ok',0):.0f} "
+                f"mem={scores.get('memory_score',0):.3f} q50={scores.get('memory_q50',1):.3f} dis={scores.get('distractor_penalty',0):.3f} "
+                f"sizep={scores.get('size_prior_score',0):.3f} oq={scores.get('objectness_quality_score',0):.3f} "
+                f"ver={scores.get('recovery_verifier_ok',0):.0f}/{scores.get('recovery_shape_ok',0):.0f}{scores.get('recovery_memory_ok',0):.0f}{scores.get('recovery_size_ok',0):.0f} "
                 f"match={scores.get('match_score',0):.3f} "
                 f"psr={scores.get('psr',0):.2f} margin={scores.get('peak_margin',0):.3f} "
                 f"bbox={fmt_bbox(bbox)} pred=({scores.get('pred_w',0):.1f},{scores.get('pred_h',0):.1f}) "
@@ -170,12 +171,21 @@ def main():
                 'recovery_score': scores.get('recovery_score', 0.0),
                 'response_shape_score': scores.get('response_shape_score', 0.0),
                 'motion_score': scores.get('motion_score', 0.0),
-                'identity_score': scores.get('identity_score', 0.0),
+                'memory_score': scores.get('memory_score', 0.0),
+                'memory_q25': scores.get('memory_q25', 1.0),
+                'memory_q50': scores.get('memory_q50', 1.0),
+                'memory_q75': scores.get('memory_q75', 1.0),
+                'distractor_penalty': scores.get('distractor_penalty', 0.0),
+                'memory_updated': scores.get('memory_updated', 0.0),
+                'memory_count': scores.get('memory_count', 0.0),
+                'stable_memory_count': scores.get('stable_memory_count', 0.0),
+                'recent_memory_count': scores.get('recent_memory_count', 0.0),
+                'distractor_count': scores.get('distractor_count', 0.0),
                 'size_prior_score': scores.get('size_prior_score', 0.0),
                 'objectness_quality_score': scores.get('objectness_quality_score', 0.0),
                 'recovery_verifier_ok': scores.get('recovery_verifier_ok', 0.0),
                 'recovery_shape_ok': scores.get('recovery_shape_ok', 0.0),
-                'recovery_identity_ok': scores.get('recovery_identity_ok', 0.0),
+                'recovery_memory_ok': scores.get('recovery_memory_ok', 0.0),
                 'recovery_size_ok': scores.get('recovery_size_ok', 0.0),
                 'objectness': scores.get('objectness', 0.0),
                 'quality': scores.get('quality', 0.0),
@@ -207,8 +217,9 @@ def main():
                 f"first_lost frame={frame_idx} bbox={fmt_bbox(bbox)} conf={out.confidence:.3f} "
                 f"trk={scores.get('tracking_score',0):.3f} rec={scores.get('recovery_score',0):.3f} "
                 f"shape={scores.get('response_shape_score',0):.3f} mot={scores.get('motion_score',0):.3f} "
-                f"id={scores.get('identity_score',0):.3f} sizep={scores.get('size_prior_score',0):.3f} oq={scores.get('objectness_quality_score',0):.3f} "
-                f"ver={scores.get('recovery_verifier_ok',0):.0f}/{scores.get('recovery_shape_ok',0):.0f}{scores.get('recovery_identity_ok',0):.0f}{scores.get('recovery_size_ok',0):.0f}",
+                f"mem={scores.get('memory_score',0):.3f} q50={scores.get('memory_q50',1):.3f} dis={scores.get('distractor_penalty',0):.3f} "
+                f"sizep={scores.get('size_prior_score',0):.3f} oq={scores.get('objectness_quality_score',0):.3f} "
+                f"ver={scores.get('recovery_verifier_ok',0):.0f}/{scores.get('recovery_shape_ok',0):.0f}{scores.get('recovery_memory_ok',0):.0f}{scores.get('recovery_size_ok',0):.0f}",
                 flush=True,
             )
             break

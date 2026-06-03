@@ -6,6 +6,7 @@ import torch
 
 from .config import AegisConfig, config_to_dict
 from .core.local_core import LocalCore
+from .memory import TargetTemporalMemory
 from .utils.crop_policy import adaptive_search_crop_policy
 from .utils.image import crop_with_context
 from .utils.box_ops import BBox, clamp_bbox, bbox_center, make_bbox_from_center
@@ -77,6 +78,7 @@ class AegisTrackOne:
     def __init__(self, cfg: Optional[AegisConfig] = None):
         self.cfg = cfg or AegisConfig()
         self.local_core = LocalCore(self.cfg)
+        self.memory = TargetTemporalMemory(self.cfg)
         self.stable_box = StableSizeFallback(self.cfg)
         self.state = TrackState.LOST
         self.initialized = False
@@ -116,6 +118,7 @@ class AegisTrackOne:
         self.local_core.eval()
         self.local_core.initialize(frame, init_bbox)
         self.initial_target_token = self.local_core.encode_target(frame, init_bbox).detach()
+        self.memory.reset(self.initial_target_token)
         self.stable_box.reset(init_bbox)
         self.state = TrackState.TRACKING
         self.current_bbox = init_bbox
@@ -142,6 +145,7 @@ class AegisTrackOne:
         self.last_good_bbox = None
         self.pending_recovery_bbox = None
         self.initial_target_token = None
+        self.memory.reset()
         self.bad_count = 0
         self.good_count = 0
         self.velocity[:] = 0.0
@@ -225,20 +229,37 @@ class AegisTrackOne:
     def _objectness_quality_score(self, cand: Candidate) -> float:
         return float(np.clip(0.5 * float(cand.objectness) + 0.5 * float(cand.quality), 0.0, 1.0))
 
-    def _identity_score(self, cand: Candidate) -> float:
-        if self.initial_target_token is None or cand.visual_emb is None:
+    def _memory_weight_for_size(self) -> float:
+        if not bool(getattr(self.cfg, 'use_temporal_memory', True)):
             return 0.0
-        token = self.initial_target_token.to(cand.visual_emb.device)
-        return float(torch.dot(cand.visual_emb, token).clamp(-1.0, 1.0).item())
+        size = max(self.stable_box.stable_size)
+        explicit = float(getattr(self.cfg, 'recovery_score_memory_weight', 0.0))
+        if explicit > 0:
+            return explicit
+        if size <= 12:
+            return float(getattr(self.cfg, 'memory_score_weight_tiny', 0.03))
+        if size <= 32:
+            return float(getattr(self.cfg, 'memory_score_weight_small', 0.07))
+        if size <= 96:
+            return float(getattr(self.cfg, 'memory_score_weight_medium', 0.12))
+        return float(getattr(self.cfg, 'memory_score_weight_large', 0.18))
+
+    def _memory_stats_for_candidate(self, cand: Candidate) -> dict[str, float]:
+        if not bool(getattr(self.cfg, 'use_temporal_memory', True)):
+            return self.memory.match(None)
+        return self.memory.match(cand.visual_emb)
 
     def _recovery_verifier_ok(self, cand: Candidate) -> bool:
         shape_ok = float(getattr(cand, 'response_shape_score', 0.0)) >= float(getattr(self.cfg, 'recovery_min_shape_score', 0.45))
-        identity_ok = float(getattr(cand, 'identity_score', -1.0)) >= float(getattr(self.cfg, 'recovery_min_identity_score', 0.10))
+        memory_ok = (
+            not bool(getattr(self.cfg, 'recovery_require_memory', False))
+            or float(getattr(cand, 'memory_score', 0.0)) > 0.0
+        )
         size_ok = float(getattr(cand, 'size_prior_score', 0.0)) >= float(getattr(self.cfg, 'recovery_min_size_prior_score', 0.35))
         cand.recovery_shape_ok = bool(shape_ok)
-        cand.recovery_identity_ok = bool(identity_ok)
+        cand.recovery_memory_ok = bool(memory_ok)
         cand.recovery_size_ok = bool(size_ok)
-        cand.recovery_verifier_ok = bool(shape_ok and identity_ok and size_ok)
+        cand.recovery_verifier_ok = bool(shape_ok and memory_ok and size_ok)
         return bool(cand.recovery_verifier_ok)
 
     def _score_candidate(
@@ -253,24 +274,40 @@ class AegisTrackOne:
         motion = self._motion_consistency_score(jump_px, max_jump_px) if motion_ok else 0.0
         size_prior = self._size_prior_score(cand.bbox)
         obj_quality = self._objectness_quality_score(cand)
-        identity = self._identity_score(cand)
+        memory_stats = self._memory_stats_for_candidate(cand)
+        memory_score = memory_stats['memory_score']
+        distractor_penalty = memory_stats['distractor_penalty']
+        memory_weight = self._memory_weight_for_size()
+        base_recovery_weight = max(0.0, 1.0 - memory_weight)
 
         tracking_score = (
             float(getattr(self.cfg, 'tracking_score_shape_weight', 0.70)) * response_shape
             + float(getattr(self.cfg, 'tracking_score_motion_weight', 0.30)) * motion
         )
-        recovery_score = (
+        base_recovery_score = (
             float(getattr(self.cfg, 'recovery_score_shape_weight', 0.35)) * response_shape
-            + float(getattr(self.cfg, 'recovery_score_identity_weight', 0.35)) * max(identity, 0.0)
             + float(getattr(self.cfg, 'recovery_score_size_weight', 0.15)) * size_prior
             + float(getattr(self.cfg, 'recovery_score_objectness_quality_weight', 0.15)) * obj_quality
+        )
+        recovery_score = (
+            base_recovery_weight * base_recovery_score
+            + memory_weight * memory_score
+            - float(getattr(self.cfg, 'memory_distractor_penalty_weight', 0.15)) * distractor_penalty
         )
 
         cand.response_shape_score = float(np.clip(response_shape, 0.0, 1.0))
         cand.motion_score = float(np.clip(motion, 0.0, 1.0))
         cand.size_prior_score = float(np.clip(size_prior, 0.0, 1.0))
         cand.objectness_quality_score = float(obj_quality)
-        cand.identity_score = float(identity)
+        cand.memory_score = float(memory_score)
+        cand.memory_q25 = float(memory_stats['memory_q25'])
+        cand.memory_q50 = float(memory_stats['memory_q50'])
+        cand.memory_q75 = float(memory_stats['memory_q75'])
+        cand.distractor_penalty = float(distractor_penalty)
+        cand.memory_count = float(memory_stats['memory_count'])
+        cand.stable_memory_count = float(memory_stats['stable_memory_count'])
+        cand.recent_memory_count = float(memory_stats['recent_memory_count'])
+        cand.distractor_count = float(memory_stats['distractor_count'])
         cand.tracking_score = float(np.clip(tracking_score, 0.0, 1.0))
         cand.recovery_score = float(np.clip(recovery_score, 0.0, 1.0))
         self._recovery_verifier_ok(cand)
@@ -381,6 +418,7 @@ class AegisTrackOne:
         t0 = time.perf_counter()
         H, W = frame.shape[:2]
         self.frame_idx += 1
+        prev_state = self.state
 
         # Predict around current bbox in TRACKING, but around pending/last_good in LOST.
         anchor, anchor_source = self._select_anchor()
@@ -399,6 +437,7 @@ class AegisTrackOne:
         best, select_reason, selection_score, selected_jump_px, selected_max_jump_px, raw_topk_count, nms_topk_count = (
             self._select_candidate_from_topk(candidates)
         )
+        self.memory.add_distractors(candidates, accepted=best)
         if best is None:
             bbox = self.current_bbox
             active_score = 0.0
@@ -471,6 +510,24 @@ class AegisTrackOne:
             self.last_good_bbox = bbox
             # stable size is a reference only, updated from accepted prediction.
             self.stable_box.update(bbox)
+        memory_updated = False
+        memory_stats = self.memory.match(getattr(best, 'visual_emb', None) if best else None)
+        if (
+            bool(getattr(self.cfg, 'use_temporal_memory', True))
+            and best is not None
+            and prev_state == TrackState.TRACKING
+            and decision == Decision.ACCEPT_RAW
+            and bool(motion_ok)
+        ):
+            should_update, update_stats = self.memory.should_update(
+                best.visual_emb,
+                tracking_score=float(getattr(best, 'tracking_score', 0.0)),
+                response_shape_score=float(getattr(best, 'response_shape_score', 0.0)),
+            )
+            memory_stats = update_stats
+            if should_update:
+                memory_stats = self.memory.add_confirmed(best.visual_emb)
+                memory_updated = True
         self.prev_frame = frame.copy()
         elapsed = max(1e-6, time.perf_counter() - t0)
         scores = {
@@ -484,15 +541,23 @@ class AegisTrackOne:
             'active_score': float(active_score),
             'response_shape_score': float(getattr(best, 'response_shape_score', 0.0)) if best else 0.0,
             'motion_score': float(getattr(best, 'motion_score', 0.0)) if best else 0.0,
-            'identity_score': float(getattr(best, 'identity_score', 0.0)) if best else 0.0,
+            'memory_score': float(getattr(best, 'memory_score', memory_stats.get('memory_score', 0.0))) if best else 0.0,
+            'memory_q25': float(getattr(best, 'memory_q25', memory_stats.get('memory_q25', 1.0))) if best else 1.0,
+            'memory_q50': float(getattr(best, 'memory_q50', memory_stats.get('memory_q50', 1.0))) if best else 1.0,
+            'memory_q75': float(getattr(best, 'memory_q75', memory_stats.get('memory_q75', 1.0))) if best else 1.0,
+            'distractor_penalty': float(getattr(best, 'distractor_penalty', memory_stats.get('distractor_penalty', 0.0))) if best else 0.0,
+            'memory_updated': float(memory_updated),
+            'memory_count': float(memory_stats.get('memory_count', 0.0)),
+            'stable_memory_count': float(memory_stats.get('stable_memory_count', 0.0)),
+            'recent_memory_count': float(memory_stats.get('recent_memory_count', 0.0)),
+            'distractor_count': float(memory_stats.get('distractor_count', 0.0)),
             'size_prior_score': float(getattr(best, 'size_prior_score', 0.0)) if best else 0.0,
             'objectness_quality_score': float(getattr(best, 'objectness_quality_score', 0.0)) if best else 0.0,
             'recovery_verifier_ok': float(getattr(best, 'recovery_verifier_ok', False)) if best else 0.0,
             'recovery_shape_ok': float(getattr(best, 'recovery_shape_ok', False)) if best else 0.0,
-            'recovery_identity_ok': float(getattr(best, 'recovery_identity_ok', False)) if best else 0.0,
+            'recovery_memory_ok': float(getattr(best, 'recovery_memory_ok', False)) if best else 0.0,
             'recovery_size_ok': float(getattr(best, 'recovery_size_ok', False)) if best else 0.0,
             'recovery_min_shape_score': float(getattr(self.cfg, 'recovery_min_shape_score', 0.45)),
-            'recovery_min_identity_score': float(getattr(self.cfg, 'recovery_min_identity_score', 0.10)),
             'recovery_min_size_prior_score': float(getattr(self.cfg, 'recovery_min_size_prior_score', 0.35)),
             'objectness': float(best.objectness) if best else 0.0,
             'quality': float(best.quality) if best else 0.0,

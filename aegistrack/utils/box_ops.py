@@ -1,7 +1,6 @@
 from __future__ import annotations
-from typing import Tuple, List
+from typing import Tuple
 import math
-import numpy as np
 
 BBox = Tuple[float, float, float, float]
 
@@ -9,11 +8,6 @@ BBox = Tuple[float, float, float, float]
 def xywh_to_xyxy(b: BBox) -> Tuple[float, float, float, float]:
     x, y, w, h = b
     return x, y, x + w, y + h
-
-
-def xyxy_to_xywh(b: Tuple[float, float, float, float]) -> BBox:
-    x1, y1, x2, y2 = b
-    return x1, y1, max(0.0, x2 - x1), max(0.0, y2 - y1)
 
 
 def bbox_center(b: BBox) -> Tuple[float, float]:
@@ -53,33 +47,3 @@ def center_distance(a: BBox, b: BBox) -> float:
     ax, ay = bbox_center(a)
     bx, by = bbox_center(b)
     return float(math.hypot(ax - bx, ay - by))
-
-
-def nms_xywh(boxes: List[BBox], scores: List[float], iou_thr: float, max_keep: int) -> List[int]:
-    if not boxes:
-        return []
-    idxs = list(np.argsort(scores)[::-1])
-    keep = []
-    while idxs and len(keep) < max_keep:
-        i = idxs.pop(0)
-        keep.append(i)
-        idxs = [j for j in idxs if iou_xywh(boxes[i], boxes[j]) < iou_thr]
-    return keep
-
-
-def giou_loss_xyxy(pred, target):
-    import torch
-    px1, py1, px2, py2 = pred.unbind(-1)
-    tx1, ty1, tx2, ty2 = target.unbind(-1)
-    ix1, iy1 = torch.maximum(px1, tx1), torch.maximum(py1, ty1)
-    ix2, iy2 = torch.minimum(px2, tx2), torch.minimum(py2, ty2)
-    inter = (ix2 - ix1).clamp(min=0) * (iy2 - iy1).clamp(min=0)
-    pa = (px2 - px1).clamp(min=0) * (py2 - py1).clamp(min=0)
-    ta = (tx2 - tx1).clamp(min=0) * (ty2 - ty1).clamp(min=0)
-    union = pa + ta - inter + 1e-7
-    iou = inter / union
-    cx1, cy1 = torch.minimum(px1, tx1), torch.minimum(py1, ty1)
-    cx2, cy2 = torch.maximum(px2, tx2), torch.maximum(py2, ty2)
-    ca = (cx2 - cx1).clamp(min=0) * (cy2 - cy1).clamp(min=0) + 1e-7
-    giou = iou - (ca - union) / ca
-    return 1.0 - giou

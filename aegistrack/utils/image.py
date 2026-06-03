@@ -37,19 +37,9 @@ def crop_to_tensor(crop: np.ndarray, size: int, device: str):
     return ((x - IMAGENET_MEAN) / IMAGENET_STD).unsqueeze(0).to(device)
 
 
-def image_to_tensor(image: np.ndarray, size: int, device: str = 'cpu'):
-    return crop_to_tensor(image, size, device)
-
-
 def crop_point_to_frame(px: float, py: float, meta: Dict[str, float], input_size: int):
     scale = meta["side"] / float(input_size)
     return meta["x1"] + px * scale, meta["y1"] + py * scale
-
-
-def crop_bbox_to_frame(b: BBox, meta: Dict[str, float], input_size: int) -> BBox:
-    x, y, w, h = b
-    scale = meta["side"] / float(input_size)
-    return meta["x1"] + x * scale, meta["y1"] + y * scale, w * scale, h * scale
 
 
 def frame_bbox_to_crop(b: BBox, meta: Dict[str, float], input_size: int) -> BBox:

@@ -20,12 +20,29 @@ center_nms_max_keep_lost: 8
 tracking_score_shape_weight: 0.70
 tracking_score_motion_weight: 0.30
 recovery_score_shape_weight: 0.35
-recovery_score_identity_weight: 0.35
 recovery_score_size_weight: 0.15
 recovery_score_objectness_quality_weight: 0.15
 recovery_min_shape_score: 0.45
-recovery_min_identity_score: 0.10
 recovery_min_size_prior_score: 0.35
+use_temporal_memory: true
+recovery_score_memory_weight: 0.0
+memory_score_weight_tiny: 0.03
+memory_score_weight_small: 0.07
+memory_score_weight_medium: 0.12
+memory_score_weight_large: 0.18
+memory_distractor_penalty_weight: 0.15
+recovery_require_memory: false
+memory_stable_size: 16
+memory_recent_size: 8
+memory_distractor_size: 24
+memory_stable_promote_frames: 3
+memory_update_min_tracking_score: 0.55
+memory_update_min_shape_score: 0.55
+memory_update_max_q25: 0.35
+memory_update_max_q50: 0.45
+memory_update_max_q75: 0.60
+memory_distractor_add_topk: 3
+memory_distractor_min_local_score: 0.35
 stable_size_lr_tiny: 0.03
 
 train:
@@ -98,6 +115,10 @@ blur_bbox_expand_parallel_factor: 0.30
 blur_bbox_expand_parallel_max_px: 6.0
 blur_bbox_expand_perp_px: 1.0
 blur_aug_max_bbox_expand_ratio: 1.6
+memory_loss_weight: 0.05
+memory_loss_neg_topk: 8
+memory_loss_gt_exclusion_radius: 2.5
+memory_loss_temperature: 0.10
 
 # Runtime trust / reinit quarantine.
 uetrack_trust_thr: 0.45
