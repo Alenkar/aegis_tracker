@@ -147,6 +147,19 @@ class AegisConfig:
     train_motion_jitter: float = 0.15
     train_min_visible_iou: float = 0.98
     train_scale_jitter: float = 0.25
+    blur_aug_enabled: bool = True
+    blur_aug_prob: float = 0.15
+    motion_blur_prob: float = 0.75
+    motion_blur_kernel_min: int = 3
+    motion_blur_kernel_max: int = 11
+    blur_horizontal_prob: float = 0.35
+    blur_vertical_prob: float = 0.35
+    blur_diagonal_prob: float = 0.20
+    blur_angle_jitter_deg: float = 10.0
+    blur_bbox_expand_parallel_factor: float = 0.30
+    blur_bbox_expand_parallel_max_px: float = 6.0
+    blur_bbox_expand_perp_px: float = 1.0
+    blur_aug_max_bbox_expand_ratio: float = 1.6
 
     # UETrack-like runtime state
     uetrack_trust_thr: float = 0.45

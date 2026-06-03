@@ -77,7 +77,7 @@ def main():
     cap = cv2.VideoCapture(args.video)
     fps_in = cap.get(cv2.CAP_PROP_FPS) or 25
 
-    cap.set(cv2.CAP_PROP_POS_FRAMES, fps_in * 75)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, int(fps_in * 75))
 
     ok, frame = cap.read()
     if not ok:

@@ -85,6 +85,19 @@ corr_response_weight: 0.45
 train_search_jitter: 0.30
 train_motion_jitter: 0.10
 train_scale_jitter: 0.25
+blur_aug_enabled: true
+blur_aug_prob: 0.15
+motion_blur_prob: 0.75
+motion_blur_kernel_min: 3
+motion_blur_kernel_max: 11
+blur_horizontal_prob: 0.35
+blur_vertical_prob: 0.35
+blur_diagonal_prob: 0.20
+blur_angle_jitter_deg: 10.0
+blur_bbox_expand_parallel_factor: 0.30
+blur_bbox_expand_parallel_max_px: 6.0
+blur_bbox_expand_perp_px: 1.0
+blur_aug_max_bbox_expand_ratio: 1.6
 
 # Runtime trust / reinit quarantine.
 uetrack_trust_thr: 0.45

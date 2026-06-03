@@ -1,1 +1,9 @@
 /.idea
+__pycache__/
+*.py[cod]
+
+# Runtime data and generated outputs
+*.csv
+*.mp4
+*.zip
+runs/

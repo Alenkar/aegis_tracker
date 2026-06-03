@@ -74,7 +74,7 @@ class AegisTrackOne:
     fallback, adaptive crop, and debug scores.
     """
 
-    def __init__(self, cfg: Optional[AegisConfig] = None, detector_fn=None):
+    def __init__(self, cfg: Optional[AegisConfig] = None):
         self.cfg = cfg or AegisConfig()
         self.local_core = LocalCore(self.cfg)
         self.stable_box = StableSizeFallback(self.cfg)

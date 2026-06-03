@@ -13,6 +13,7 @@ from ..utils.crop_policy import adaptive_search_crop_policy
 from ..utils.image import crop_with_context, crop_to_tensor, frame_bbox_to_crop
 from ..utils.box_ops import bbox_center
 from .augment import tiny_uav_augment
+from .blur_aug import apply_train_blur_stretch
 
 IMG_EXTS = ('.jpg', '.jpeg', '.png', '.bmp')
 JSON_LABEL_NAMES = ('IR_label.json', 'infrared_label.json', 'TIR_label.json', 'label.json', 'infrared.json', 'visible.json')
@@ -164,6 +165,7 @@ class SOTPairDataset(Dataset):
         self.pairs_per_epoch = pairs_per_epoch
         self.max_gap = max_gap
         self.augment = augment
+        self.training = bool(augment)
         self.seqs = []
         roots = root if isinstance(root, list) else [root]
         for item in roots:
@@ -252,9 +254,13 @@ class SOTPairDataset(Dataset):
                 search_center = (gt_cx, gt_cy)
                 x_crop, meta = crop_with_context(x, search_center, x_side)
 
+            gt_crop = frame_bbox_to_crop(bx, meta, self.cfg.search_size)
+            x_crop = cv2.resize(x_crop, (self.cfg.search_size, self.cfg.search_size), interpolation=cv2.INTER_LINEAR)
+            if self.training:
+                x_crop, gt_crop = apply_train_blur_stretch(x_crop, gt_crop, self.cfg)
+
             template = crop_to_tensor(z_crop, self.cfg.template_size, 'cpu')[0]
             search = crop_to_tensor(x_crop, self.cfg.search_size, 'cpu')[0]
-            gt_crop = frame_bbox_to_crop(bx, meta, self.cfg.search_size)
             return {
                 'template': template,
                 'search': search,

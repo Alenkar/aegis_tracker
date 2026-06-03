@@ -150,8 +150,3 @@ def local_core_loss(out, gt_bbox, cfg: AegisConfig):
         'gt_h_mean': gt_bbox[:, 3].mean().detach(),
     }
 
-
-def ranking_margin_loss(pos_scores, neg_scores, margin=0.2):
-    if pos_scores.numel() == 0 or neg_scores.numel() == 0:
-        return torch.zeros((), device=pos_scores.device if pos_scores.numel() else neg_scores.device)
-    return torch.relu(margin - pos_scores[:, None] + neg_scores[None, :]).mean()
